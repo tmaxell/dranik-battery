@@ -1,0 +1,40 @@
+# --- Project docs are intentionally kept out of the repository ---
+/docs/
+
+# --- Swift / SwiftPM ---
+.build/
+.swiftpm/
+Package.resolved
+*.o
+*.a
+*.dylib
+
+# --- Xcode ---
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+*.xcuserstate
+*.moved-aside
+
+# --- Build output ---
+/build/
+/dist/
+*.dmg
+*.zip
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# --- Editors ---
+.vscode/
+.idea/
+*.swp
+
+# --- Local secrets / signing ---
+*.p12
+*.provisionprofile
+Local.xcconfig
+.env
