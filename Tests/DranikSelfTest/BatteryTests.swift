@@ -23,7 +23,7 @@ private func makeSnapshot(
         voltage: voltage,
         amperage: amperage,
         timeRemaining: 42,
-        notChargingReason: 0,
+        notChargingReason: .unobstructed,
         chargerInhibitReason: 0,
         chargingCurrent: 1153,
         chargingVoltage: 4320
@@ -80,20 +80,21 @@ func runLivePowerReaderTests() {
         )
     }
 
-    test("reported percentage tracks raw capacity below the smoothed top") {
+    test("reported percentage is in the same league as raw capacity") {
         let snapshot = try snapshot()
 
-        // macOS smooths the reported percentage near the top of the range: it was
-        // observed reporting 100 against a raw 4465/4718 = 94.6 %, with
-        // isFullyCharged already back to false — so no flag predicts it. Below
-        // that region the two track closely, and checking there still catches a
-        // gross unit or field mix-up.
-        guard snapshot.percentage < 95 else {
-            try skip("battery is in the smoothed top-of-charge region (\(snapshot.percentage) %)")
-        }
-
+        // The tolerance is deliberately wide. The reported percentage is not a
+        // ratio of any capacity pair macOS exposes: measured against
+        // AppleRawCurrentCapacity/AppleRawMaxCapacity the offset was +1.0 points
+        // on one reading and +5.1 on another, and the other denominators are
+        // further off still (NominalChargeCapacity +7.4, DesignCapacity +11.4).
+        // macOS applies its own smoothing, and the gap moves with charge history.
+        //
+        // So this cannot assert agreement — only that the two are the same kind
+        // of quantity. That is still worth checking: reading the wrong field or
+        // mistaking mAh for percent lands orders of magnitude away, not points.
         let derived = Double(snapshot.rawCurrentCapacity) / Double(snapshot.rawMaxCapacity) * 100
-        expectClose(derived, Double(snapshot.percentage), accuracy: 3.0)
+        expectClose(derived, Double(snapshot.percentage), accuracy: 20.0)
     }
 
     test("charging implies external power") {

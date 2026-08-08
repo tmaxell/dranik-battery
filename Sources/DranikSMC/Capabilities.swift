@@ -62,6 +62,27 @@ public extension SMCKeySpec {
 }
 
 /// Which mechanism, if any, this machine offers for gating charge.
+/// Timings the charge gate was measured to have, rather than assumed to have.
+public enum ChargeGateTiming {
+    /// How long the hardware took to act on a gate write.
+    ///
+    /// Measured on MacBookPro17,1 / macOS 14.8.7: after `CHTE` was set to the
+    /// off-payload the battery kept drawing 1786 mA for six further seconds and
+    /// only fell to zero at the seventh. Restoring the gate was equally slow.
+    ///
+    /// The key reads back its new value immediately, so a read-back says nothing
+    /// about whether the machine has acted yet — only `NotChargingReason` does,
+    /// and only after this long.
+    public static let observedEffectLatency: TimeInterval = 7
+
+    /// How long to wait before concluding a gate write had no effect.
+    ///
+    /// Comfortably longer than `observedEffectLatency`, because declaring the
+    /// mechanism broken and giving up on charge limiting is a far worse error
+    /// than waiting a few extra seconds.
+    public static let verificationWindow: TimeInterval = 20
+}
+
 public enum ChargeGate: Equatable, Sendable {
     /// One key controls the gate. `CHTE` on current firmware.
     case single(SMCKeySpec)
@@ -74,12 +95,18 @@ public enum ChargeGate: Equatable, Sendable {
         self != .unsupported
     }
 
-    public var keys: [SMCKey] {
+    /// The keys that make up the gate. Writing the gate means writing all of
+    /// them, in this order.
+    public var specs: [SMCKeySpec] {
         switch self {
-        case .single(let spec): return [spec.key]
-        case .pair(let first, let second): return [first.key, second.key]
+        case .single(let spec): return [spec]
+        case .pair(let first, let second): return [first, second]
         case .unsupported: return []
         }
+    }
+
+    public var keys: [SMCKey] {
+        specs.map(\.key)
     }
 }
 
