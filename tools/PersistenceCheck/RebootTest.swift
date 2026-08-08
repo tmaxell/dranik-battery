@@ -176,6 +176,7 @@ enum RebootTest {
 
         PersistenceRecord.remove()
         removeBootDaemon()
+        removeInstalledCopy()
         exit(observation.survived ? 1 : 0)
     }
 
@@ -184,8 +185,9 @@ enum RebootTest {
     static func abort(gate: Gate) -> Never {
         let failures = gate.open()
         removeBootDaemon()
+        removeInstalledCopy()
         PersistenceRecord.remove()
-        print("gate reopened, boot daemon and record removed")
+        print("gate reopened, boot daemon, installed copy and record removed")
         print("gate now: \(gate.describe())")
         exit(failures.isEmpty ? 0 : 2)
     }
@@ -232,10 +234,17 @@ enum RebootTest {
         )
     }
 
+    /// Stops the job running again. Removing the plist is what does that;
+    /// booting it out of the current launchd session would kill this process
+    /// mid-write when called from `check`.
     private static func removeBootDaemon() {
-        // Removing the plist is what stops it running again; booting it out of
-        // the current launchd session would kill this process mid-write when
-        // called from `check`.
         try? FileManager.default.removeItem(atPath: plistPath)
+    }
+
+    /// Also removes the copied binary. Kept separate from `removeBootDaemon`
+    /// because `check` runs *from* that copy — it must survive until the test is
+    /// read out or cancelled, at which point nothing should be left behind.
+    private static func removeInstalledCopy() {
+        try? FileManager.default.removeItem(atPath: installedBinary)
     }
 }

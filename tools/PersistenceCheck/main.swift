@@ -83,6 +83,9 @@ if command == "status" {
     }
     let installed = FileManager.default.fileExists(atPath: RebootTest.plistPath)
     print("boot daemon: \(installed ? "installed" : "not installed")")
+    if FileManager.default.fileExists(atPath: RebootTest.installedBinary) {
+        print("leftover:    \(RebootTest.installedBinary) — remove with `abort`")
+    }
     if let snapshot = try? PowerReader.snapshot() {
         print("battery: \(snapshot.percentage) %, charging=\(snapshot.isCharging), "
             + "reason=\(snapshot.notChargingReason.map(String.init(describing:)) ?? "-")")
