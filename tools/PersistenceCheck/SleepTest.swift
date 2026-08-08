@@ -17,6 +17,12 @@ enum SleepTest {
     /// restores. Counted in awake seconds, so a long sleep does not consume it.
     static let awakeBudget: TimeInterval = 150
 
+    /// Below this the machine has not been asleep long enough to reach standby.
+    /// With `hibernatemode 3` and standby enabled it powers down further on a
+    /// long sleep than on a brief one, so a short nap only answers the easy half
+    /// of the question.
+    static let standbyThreshold: TimeInterval = 30 * 60
+
     static func run(gate: Gate, sleepNow: Bool) -> Never {
         let queue = DispatchQueue(label: "com.dranik.battery.persistence.sleep")
         var restored = false
@@ -101,6 +107,16 @@ enum SleepTest {
                     print("     Closing it before sleep buys nothing; the battery charges")
                     print("     freely until the daemon runs again after waking.")
                 }
+                if slept < standbyThreshold {
+                    print("")
+                    print(String(
+                        format: "  ⚠️  This was a %.0f-minute sleep, short of the ~%.0f minutes",
+                        slept / 60, standbyThreshold / 60
+                    ))
+                    print("     it takes to reach standby. With hibernatemode 3 the machine")
+                    print("     powers down further on a long sleep, so this covers ordinary")
+                    print("     sleep only. Repeat across a night before relying on it overnight.")
+                }
                 print("")
                 restore("machine woke")
             }
@@ -126,6 +142,19 @@ enum SleepTest {
         print("  gate now:   \(gate.describe())")
         if let snapshot = try? PowerReader.snapshot() {
             print("  charging:   \(snapshot.isCharging), \(snapshot.amperage) mA")
+            // Distinguish the two reasons charging might not have resumed. A full
+            // battery declining to charge is not a failed restore, and reading it
+            // as one sends someone hunting a problem that is not there.
+            if !snapshot.isCharging {
+                if snapshot.notChargingReason?.contains(.batteryFull) == true {
+                    print("              (battery is full — nothing to resume)")
+                } else if snapshot.notChargingReason?.contains(.inhibited) == true {
+                    print("              still reported as inhibited — the gate did not release")
+                } else {
+                    print("              reason: "
+                        + (snapshot.notChargingReason.map(String.init(describing:)) ?? "-"))
+                }
+            }
         }
         if !failures.isEmpty {
             print("")

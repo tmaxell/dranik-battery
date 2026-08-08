@@ -32,6 +32,19 @@ public struct NotChargingReason: Equatable, Sendable, CustomStringConvertible {
     /// signal that the software charge gate is what is holding charging back.
     public static let inhibited = NotChargingReason(rawValue: 1 << 55)
 
+    /// Bits 0 and 22 together, raw `0x400001`. Observed at 100 % with
+    /// `FullyCharged` set and `ChargingCurrent` at zero — the battery simply has
+    /// nowhere to put more charge.
+    ///
+    /// Defined as the pair because that is how it has been seen; whether either
+    /// bit carries a meaning on its own is unknown, so `contains` requires both.
+    ///
+    /// Worth naming because it is the one reason likely to be mistaken for a
+    /// working charge limit: at 100 % the machine stops charging on its own, and
+    /// something checking only "is it charging" cannot tell that from the gate
+    /// doing its job.
+    public static let batteryFull = NotChargingReason(rawValue: (1 << 0) | (1 << 22))
+
     /// No obstruction at all. Deliberately not called `none`: this type is
     /// almost always handled as an `Optional`, where `.none` silently means
     /// `nil` — a different thing entirely, and one the compiler only warns
@@ -46,7 +59,9 @@ public struct NotChargingReason: Equatable, Sendable, CustomStringConvertible {
 
     /// Bits set here that this project has never seen and cannot name.
     public var unrecognisedBits: UInt64 {
-        rawValue & ~(Self.onBattery.rawValue | Self.inhibited.rawValue)
+        rawValue & ~(
+            Self.onBattery.rawValue | Self.inhibited.rawValue | Self.batteryFull.rawValue
+        )
     }
 
     public var description: String {
@@ -55,6 +70,7 @@ public struct NotChargingReason: Equatable, Sendable, CustomStringConvertible {
         var parts: [String] = []
         if contains(.onBattery) { parts.append("onBattery") }
         if contains(.inhibited) { parts.append("inhibited") }
+        if contains(.batteryFull) { parts.append("batteryFull") }
 
         let leftover = unrecognisedBits
         if leftover != 0 {
