@@ -166,6 +166,24 @@ public enum ChargeController {
             return settle(.open, .emergencyFloor(percentage: input.percentage))
         }
 
+        // A limit of 100 means "leave my charging alone", and it has to sit above
+        // every rule that closes the gate for that to be true. Only the two rules
+        // above it survive, and both of them can only ever open.
+        //
+        // This was originally further down, below the thermal hold and the
+        // on-battery rule, which made disabling the limit not actually disable
+        // anything: a machine on battery with limiting off still had its gate
+        // shut, so plugging in charged a few seconds late for no benefit at all.
+        // The micro-charge rule exists to serve the limit; with no limit it is
+        // pure cost. The thermal hold is a genuine protection, but the hardware
+        // has its own — the charger reports thermal limiting on its own account —
+        // and a machine refusing to charge after its owner explicitly turned the
+        // feature off reads as broken.
+        if config.isLimitingDisabled {
+            next.isThermallyHeld = false
+            return settle(.open, .limitingDisabled)
+        }
+
         // Thermal state is evaluated before the limit so that cooling is tracked
         // even while running on battery.
         if state.isThermallyHeld {
@@ -194,10 +212,6 @@ public enum ChargeController {
         // charge that no limit ever asked for.
         if !input.isExternalConnected {
             return settle(.closed, .onBattery)
-        }
-
-        if config.isLimitingDisabled {
-            return settle(.open, .limitingDisabled)
         }
 
         if input.percentage >= config.upperLimit {

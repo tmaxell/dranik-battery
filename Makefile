@@ -5,7 +5,7 @@ BUILD_DIR  := .build/$(CONFIG)
 TOOLS_DIR  := .build/tools
 FRAMEWORKS := -framework IOKit -framework CoreFoundation
 
-.PHONY: all build test run status dump probe tools clean help
+.PHONY: all build test run status dump probe tools clean help install uninstall daemon-dry-run logs gate-dry-run gate-experiment
 
 all: build
 
@@ -20,6 +20,23 @@ build:
 ## instead. Exits non-zero on failure. Reads only — writes nothing to the SMC.
 test:
 	$(SWIFT) run -c $(CONFIG) dranik-selftest
+
+## install: install dranikd as a LaunchDaemon (needs root)
+install: build
+	sudo ./scripts/install.sh
+
+## uninstall: stop it, confirm the gate is open, then remove it (needs root)
+uninstall:
+	sudo ./scripts/uninstall.sh
+
+## daemon-dry-run: run the daemon without writing to the SMC, needs no root
+daemon-dry-run: build
+	$(BUILD_DIR)/dranikd --dry-run --config /tmp/dranik-dry.json \
+		--state /tmp/dranik-dry-state.json --lock /tmp/dranik-dry.pid
+
+## logs: follow what the daemon is doing
+logs:
+	sudo /usr/bin/log stream --predicate 'subsystem == "com.dranik.battery"' --level debug
 
 ## gate-dry-run: rehearse the charge-gate experiment, writing nothing
 gate-dry-run: build

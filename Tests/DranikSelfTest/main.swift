@@ -10,6 +10,10 @@ runNotChargingReasonTests()
 runChargeConfigTests()
 runChargeControllerTests()
 runSleepDetectorTests()
+runConfigStoreTests()
+runInstanceLockTests()
+runWatchdogTests()
+runSuppressionWindowTests()
 
 // These touch the real SMC and battery. Every one of them either reads, or
 // exercises a write that the guards are expected to refuse before it reaches the
