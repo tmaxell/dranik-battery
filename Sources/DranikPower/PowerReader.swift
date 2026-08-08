@@ -59,7 +59,7 @@ public enum PowerReader {
             voltage: properties["Voltage"] as? Int ?? 0,
             amperage: properties["Amperage"] as? Int ?? 0,
             timeRemaining: timeRemaining,
-            notChargingReason: charger["NotChargingReason"] as? Int,
+            notChargingReason: (charger["NotChargingReason"] as? Int).map(NotChargingReason.init),
             chargerInhibitReason: charger["ChargerInhibitReason"] as? Int,
             chargingCurrent: charger["ChargingCurrent"] as? Int,
             chargingVoltage: charger["ChargingVoltage"] as? Int

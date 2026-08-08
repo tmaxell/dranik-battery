@@ -165,7 +165,9 @@ final class Experiment {
         // otherwise read as a successful gate close.
         if snapshot.isExternalConnected {
             if !snapshot.isCharging { sawChargingStop = true }
-            if (snapshot.notChargingReason ?? 0) != 0 { sawInhibitReason = true }
+            // Only the gate's own bit counts. A plain non-zero test would also
+            // fire on `onBattery`, which says nothing about the gate.
+            if snapshot.notChargingReason?.contains(.inhibited) == true { sawInhibitReason = true }
             if (snapshot.chargerInhibitReason ?? 0) != 0 { sawInhibitReason = true }
         } else {
             lostExternalPower = true
@@ -175,9 +177,10 @@ final class Experiment {
             (try? smc.read(spec.key)).flatMap { $0 }.map { "\(spec.key)=\(hex($0.bytes))" }
         }.joined(separator: " ")
 
+        let reason = snapshot.notChargingReason.map(String.init(describing:)) ?? "-"
         log("""
         t+\(tick)s  charging=\(snapshot.isCharging)  \
-        notChargingReason=\(snapshot.notChargingReason.map(String.init) ?? "-")  \
+        notChargingReason=\(reason)  \
         inhibitReason=\(snapshot.chargerInhibitReason.map(String.init) ?? "-")  \
         \(snapshot.amperage) mA  \(gate)
         """)
@@ -186,8 +189,15 @@ final class Experiment {
     // MARK: - Verdict
 
     private func finish(restoreFailures: [String]) {
-        // Give the charger a moment to act on the reopened gate before judging.
-        queue.asyncAfter(deadline: .now() + .seconds(6)) { [self] in
+        // The hardware does not act on a gate write immediately: closing it took
+        // seven seconds to show up, and reopening it is no faster. Six seconds
+        // was not enough — the first real run reported success while the battery
+        // still read 0 mA, having never confirmed charging came back.
+        let wait = dryRun ? 1 : Int(ChargeGateTiming.verificationWindow)
+        if !dryRun {
+            log("waiting \(wait)s for the charger to act on the reopened gate")
+        }
+        queue.asyncAfter(deadline: .now() + .seconds(wait)) { [self] in
             let after = try? PowerReader.snapshot()
 
             print("")
@@ -208,10 +218,12 @@ final class Experiment {
                 print("  gate now:  \(line)")
             }
 
+            let chargingResumed = after.map { $0.isCharging || $0.amperage > 0 } ?? false
             if let after {
                 print("  charging:  \(after.isCharging)")
                 print("  amperage:  \(after.amperage) mA")
                 print("  external:  \(after.isExternalConnected)")
+                print("  reason:    \(after.notChargingReason.map(String.init(describing:)) ?? "-")")
             }
 
             print("")
@@ -244,12 +256,17 @@ final class Experiment {
                 return reading.bytes == spec.onBytes
             }
             print("")
-            print(allOpen
-                ? "  Gate is open again. Charging is under the system's control."
-                : "  ⚠️  Gate is NOT open. Reboot to reset the SMC.")
+            if !allOpen {
+                print("  ⚠️  Gate is NOT open. Reboot to reset the SMC.")
+            } else if chargingResumed {
+                print("  Gate is open and charging has resumed. Nothing left behind.")
+            } else {
+                print("  ⚠️  Gate reads open, but charging has not resumed after \(wait)s.")
+                print("     Check `dranik status`; if it does not recover, reboot.")
+            }
 
             let conclusive = !lostExternalPower && (sawChargingStop || sawInhibitReason)
-            exitNow(allOpen && conclusive ? 0 : 1)
+            exitNow(allOpen && chargingResumed && conclusive ? 0 : 1)
         }
     }
 

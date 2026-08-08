@@ -40,12 +40,11 @@ public struct BatterySnapshot: Equatable, Sendable {
     /// Minutes until full or empty; `nil` when macOS is still estimating.
     public let timeRemaining: Int?
 
-    /// Non-zero when the charger is deliberately not charging.
+    /// The charger's own account of why it is not charging.
     ///
-    /// This is the hardware's own account of why charging stopped, which is why
-    /// it is worth reading even though nothing here writes to the SMC yet: it is
-    /// the independent confirmation that a future charge-gate write took effect.
-    public let notChargingReason: Int?
+    /// Independent of anything the SMC reports about its own keys, which makes it
+    /// the confirmation that a charge-gate write actually took effect.
+    public let notChargingReason: NotChargingReason?
     public let chargerInhibitReason: Int?
     public let chargingCurrent: Int?
     public let chargingVoltage: Int?
@@ -63,7 +62,7 @@ public struct BatterySnapshot: Equatable, Sendable {
         voltage: Int,
         amperage: Int,
         timeRemaining: Int?,
-        notChargingReason: Int?,
+        notChargingReason: NotChargingReason?,
         chargerInhibitReason: Int?,
         chargingCurrent: Int?,
         chargingVoltage: Int?

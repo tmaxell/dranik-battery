@@ -140,7 +140,12 @@ extension StatusReport {
                 "amperage": battery.amperage,
                 "powerWatts": battery.powerWatts,
                 "timeRemaining": battery.timeRemaining as Any,
-                "notChargingReason": battery.notChargingReason as Any,
+                // Both forms: the names are what a human wants, the raw mask is
+                // what survives a firmware revision setting a bit we cannot name.
+                "notChargingReason": battery.notChargingReason
+                    .map(String.init(describing:)) as Any,
+                "notChargingReasonRaw": battery.notChargingReason
+                    .map { String($0.rawValue) } as Any,
                 "chargerInhibitReason": battery.chargerInhibitReason as Any,
             ],
         ]
