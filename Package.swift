@@ -23,7 +23,10 @@ let package = Package(
         .target(name: "CDranikSMC"),
 
         .target(name: "DranikSMC", dependencies: ["CDranikSMC"]),
-        .target(name: "DranikPower"),
+        // Power-management message types, derived by the C preprocessor from
+        // Apple's headers rather than hardcoded.
+        .target(name: "CDranikPower"),
+        .target(name: "DranikPower", dependencies: ["CDranikPower"]),
 
         // Decisions only: no IOKit, no clock, no filesystem. Every branch is
         // reachable from a plain struct, which is why it can be tested whole.

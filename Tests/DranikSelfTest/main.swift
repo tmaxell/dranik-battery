@@ -17,5 +17,6 @@ runSleepDetectorTests()
 runLiveSMCTests()
 runLivePowerReaderTests()
 runWriteGuardTests()
+runPowerEventTests()
 
 exit(Harness.summary())
