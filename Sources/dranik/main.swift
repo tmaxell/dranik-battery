@@ -9,6 +9,7 @@ USAGE
   dranik status [--json]      Battery state, charge-control capabilities, power draw
   dranik smc <KEY>...         Read specific SMC keys, e.g. dranik smc CHTE B0AV
   dranik smc --dump           Enumerate every SMC key as TSV
+  dranik watch                Print power events as they arrive
   dranik help
 
 This build only reads. It never writes to the SMC, so it cannot change how the
@@ -99,6 +100,9 @@ case "smc":
     } else {
         runSMCRead(rest)
     }
+
+case "watch":
+    WatchCommand.run()
 
 case "help", "--help", "-h":
     print(usage)

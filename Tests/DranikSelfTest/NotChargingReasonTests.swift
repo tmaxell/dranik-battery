@@ -25,6 +25,30 @@ func runNotChargingReasonTests() {
         expectEqual(reason.description, "onBattery")
     }
 
+    test("the value seen at 100 percent decodes to batteryFull") {
+        // 4194305 == 0x400001, bits 0 and 22, read with FullyCharged set,
+        // ChargingCurrent zero and the gate open.
+        let reason = NotChargingReason(4_194_305)
+        expectTrue(reason.contains(.batteryFull))
+        expectFalse(reason.contains(.inhibited))
+        expectEqual(reason.unrecognisedBits, 0)
+        expectEqual(reason.description, "batteryFull")
+    }
+
+    test("batteryFull needs both its bits, having only been seen as a pair") {
+        expectFalse(NotChargingReason(rawValue: 1 << 0).contains(.batteryFull))
+        expectFalse(NotChargingReason(rawValue: 1 << 22).contains(.batteryFull))
+    }
+
+    test("a full battery is not mistaken for a working charge limit") {
+        // The confusion this guards against: at 100 percent the machine stops
+        // charging on its own, and anything checking only "is it charging"
+        // cannot tell that from the gate doing its job.
+        let full = NotChargingReason(4_194_305)
+        expectFalse(full.contains(.inhibited))
+        expectTrue(NotChargingReason(36_028_797_018_963_968).contains(.inhibited))
+    }
+
     test("onBattery alone is not evidence the gate is holding") {
         // The distinction this whole type exists for. A plain non-zero test
         // would have called this a successful gate close.

@@ -23,7 +23,10 @@ let package = Package(
         .target(name: "CDranikSMC"),
 
         .target(name: "DranikSMC", dependencies: ["CDranikSMC"]),
-        .target(name: "DranikPower"),
+        // Power-management message types, derived by the C preprocessor from
+        // Apple's headers rather than hardcoded.
+        .target(name: "CDranikPower"),
+        .target(name: "DranikPower", dependencies: ["CDranikPower"]),
 
         // Decisions only: no IOKit, no clock, no filesystem. Every branch is
         // reachable from a plain struct, which is why it can be tested whole.
@@ -37,6 +40,14 @@ let package = Package(
             name: "dranik-gate-experiment",
             dependencies: ["DranikSMC", "DranikPower"],
             path: "tools/GateExperiment"
+        ),
+
+        // Answers the sleep/reboot persistence questions. Writes to the SMC,
+        // so it too is a separate executable that must be invoked by name.
+        .executableTarget(
+            name: "dranik-persistence",
+            dependencies: ["DranikSMC", "DranikPower", "DranikCore"],
+            path: "tools/PersistenceCheck"
         ),
 
         // Not a .testTarget: XCTest lives in Xcode, and `xcode-select` currently
