@@ -8,14 +8,16 @@ public struct BatterySnapshot: Equatable, Sendable {
     /// `MaxCapacity` is normalised to 100, so `CurrentCapacity / MaxCapacity`
     /// is not the health figure it looks like. Use `healthFraction` for that.
     ///
-    /// This is **not** derivable from the raw capacities. macOS smooths the
-    /// figure near the top of the range: observed reporting 100 while raw
-    /// capacity was 4465/4718 = 94.6 %, and with `isFullyCharged` already back
-    /// to `false`, so no flag predicts the divergence either.
+    /// This is **not** derivable from any capacity pair macOS exposes. Measured
+    /// against `AppleRawCurrentCapacity / AppleRawMaxCapacity` the offset was
+    /// +1.0 points on one reading and +5.1 on another; `NominalChargeCapacity`
+    /// is +7.4 off and `DesignCapacity` +11.4. macOS applies its own smoothing
+    /// and the gap moves with charge history, so no flag or denominator
+    /// reproduces it.
     ///
-    /// A charge limit must be compared against this number rather than against
-    /// one derived from raw capacity, because this is the number the user sees
-    /// and sets the limit against.
+    /// A charge limit must therefore be compared against this number rather than
+    /// against anything computed from raw capacity — this is the figure the user
+    /// sees and sets the limit against.
     public let percentage: Int
     public let isCharging: Bool
     public let isExternalConnected: Bool

@@ -74,12 +74,18 @@ public enum ChargeGate: Equatable, Sendable {
         self != .unsupported
     }
 
-    public var keys: [SMCKey] {
+    /// The keys that make up the gate. Writing the gate means writing all of
+    /// them, in this order.
+    public var specs: [SMCKeySpec] {
         switch self {
-        case .single(let spec): return [spec.key]
-        case .pair(let first, let second): return [first.key, second.key]
+        case .single(let spec): return [spec]
+        case .pair(let first, let second): return [first, second]
         case .unsupported: return []
         }
+    }
+
+    public var keys: [SMCKey] {
+        specs.map(\.key)
     }
 }
 
