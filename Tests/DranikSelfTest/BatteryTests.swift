@@ -23,7 +23,7 @@ private func makeSnapshot(
         voltage: voltage,
         amperage: amperage,
         timeRemaining: 42,
-        notChargingReason: .none,
+        notChargingReason: .unobstructed,
         chargerInhibitReason: 0,
         chargingCurrent: 1153,
         chargingVoltage: 4320

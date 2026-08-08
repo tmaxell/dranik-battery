@@ -15,6 +15,7 @@ let package = Package(
         .executable(name: "dranik", targets: ["dranik"]),
         .library(name: "DranikSMC", targets: ["DranikSMC"]),
         .library(name: "DranikPower", targets: ["DranikPower"]),
+        .library(name: "DranikCore", targets: ["DranikCore"]),
     ],
     targets: [
         // Layout of AppleSMC's SMCParamStruct. Kept in C so the compiler,
@@ -23,6 +24,10 @@ let package = Package(
 
         .target(name: "DranikSMC", dependencies: ["CDranikSMC"]),
         .target(name: "DranikPower"),
+
+        // Decisions only: no IOKit, no clock, no filesystem. Every branch is
+        // reachable from a plain struct, which is why it can be tested whole.
+        .target(name: "DranikCore"),
 
         .executableTarget(name: "dranik", dependencies: ["DranikSMC", "DranikPower"]),
 
@@ -39,7 +44,7 @@ let package = Package(
         // ordinary executable instead. Run it with `make test`.
         .executableTarget(
             name: "dranik-selftest",
-            dependencies: ["DranikSMC", "DranikPower", "CDranikSMC"],
+            dependencies: ["DranikSMC", "DranikPower", "DranikCore", "CDranikSMC"],
             path: "Tests/DranikSelfTest"
         ),
     ]

@@ -32,7 +32,11 @@ public struct NotChargingReason: Equatable, Sendable, CustomStringConvertible {
     /// signal that the software charge gate is what is holding charging back.
     public static let inhibited = NotChargingReason(rawValue: 1 << 55)
 
-    public static let none = NotChargingReason(rawValue: 0)
+    /// No obstruction at all. Deliberately not called `none`: this type is
+    /// almost always handled as an `Optional`, where `.none` silently means
+    /// `nil` — a different thing entirely, and one the compiler only warns
+    /// about rather than rejects.
+    public static let unobstructed = NotChargingReason(rawValue: 0)
 
     public var isEmpty: Bool { rawValue == 0 }
 
