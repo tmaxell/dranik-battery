@@ -39,6 +39,14 @@ let package = Package(
             path: "tools/GateExperiment"
         ),
 
+        // Answers the sleep/reboot persistence questions. Writes to the SMC,
+        // so it too is a separate executable that must be invoked by name.
+        .executableTarget(
+            name: "dranik-persistence",
+            dependencies: ["DranikSMC", "DranikPower", "DranikCore"],
+            path: "tools/PersistenceCheck"
+        ),
+
         // Not a .testTarget: XCTest lives in Xcode, and `xcode-select` currently
         // points at Command Line Tools, so it cannot be imported. The suite is an
         // ordinary executable instead. Run it with `make test`.
