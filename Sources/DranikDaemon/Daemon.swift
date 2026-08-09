@@ -62,6 +62,26 @@ public final class Daemon {
     // MARK: - Lifecycle
 
     public func run() -> Never {
+        let gateNames = capabilities.chargeGate.keys.map(\.description).joined(separator: "+")
+        // Before anything else it might print. The first decision line appearing
+        // above the banner was how someone came to read "(write)" as a write.
+        if dryRun {
+            print("""
+
+            ┌─────────────────────────────────────────────────────────────┐
+            │  DRY RUN — nothing is written to the SMC.                   │
+            │  The battery will charge past the limit. That is expected:  │
+            │  this shows what the daemon would decide, not what it does. │
+            │  To make it act, install it:  sudo make install             │
+            └─────────────────────────────────────────────────────────────┘
+
+            limit \(config.lowerLimit)–\(config.upperLimit)%, gate \(gateNames), \
+            policy \(config.sleepPolicy.rawValue)
+
+            """)
+            fflush(stdout)
+        }
+
         installSignalHandlers()
 
         queue.sync {
@@ -88,7 +108,7 @@ public final class Daemon {
         log.notice("""
         dranikd running\(self.dryRun ? " (DRY RUN — no SMC writes)" : "", privacy: .public), \
         limit \(self.config.lowerLimit, privacy: .public)–\(self.config.upperLimit, privacy: .public)%, \
-        gate \(self.capabilities.chargeGate.keys.map(\.description).joined(separator: "+"), privacy: .public)
+        gate \(gateNames, privacy: .public)
         """)
 
         withExtendedLifetime(signalSources) {
@@ -103,6 +123,10 @@ public final class Daemon {
         monitor?.stop()
 
         log.notice("shutting down (\(reason, privacy: .public)) — opening the gate")
+        if dryRun {
+            print("\nstopping — this was a dry run, so the SMC was never touched.")
+            fflush(stdout)
+        }
         actuator.forceOpen(reason: reason)
         persist(gateIsClosed: false, reason: "shutdown: \(reason)")
 
@@ -262,7 +286,7 @@ public final class Daemon {
         let decision = outcome.decision
         let summary = """
         \(trigger): \(snapshot.percentage)% ac=\(snapshot.isExternalConnected) \
-        -> \(decision.position.rawValue)\(decision.requiresWrite ? " (write)" : "") \
+        -> \(decision.position.rawValue)\(Self.writeNote(decision.requiresWrite, dryRun: dryRun)) \
         — \(decision.reason)
         """
         log.debug("\(summary, privacy: .public)")
@@ -303,6 +327,14 @@ public final class Daemon {
 
     private static func timestamp() -> String {
         ISO8601DateFormatter().string(from: Date())
+    }
+
+    /// A dry run must never be mistakable for a real one. "(write)" on a line
+    /// that wrote nothing reads as though the gate moved, which is exactly the
+    /// wrong impression to leave with someone watching a limit not being applied.
+    private static func writeNote(_ requiresWrite: Bool, dryRun: Bool) -> String {
+        guard requiresWrite else { return "" }
+        return dryRun ? " (WOULD write — dry run)" : " (write)"
     }
 
     private func persist(gateIsClosed: Bool, reason: String) {

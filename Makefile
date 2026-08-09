@@ -29,7 +29,9 @@ install: build
 uninstall:
 	sudo ./scripts/uninstall.sh
 
-## daemon-dry-run: run the daemon without writing to the SMC, needs no root
+## daemon-dry-run: watch the daemon decide. It NEVER writes to the SMC, so the
+##                  battery WILL charge past the limit. Needs no root. Ctrl-C to stop,
+##                  then `sudo make install` to have it actually act.
 daemon-dry-run: build
 	$(BUILD_DIR)/dranikd --dry-run --config /tmp/dranik-dry.json \
 		--state /tmp/dranik-dry-state.json --lock /tmp/dranik-dry.pid
