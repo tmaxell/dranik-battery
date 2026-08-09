@@ -10,8 +10,6 @@ public enum SMCError: Error, CustomStringConvertible {
     case ioKit(kern_return_t)
     /// The call succeeded but the SMC reported a non-zero `result`.
     case smc(UInt8)
-    /// Key string was not exactly four printable ASCII characters.
-    case malformedKey(String)
     /// The SMC reported a payload larger than the 32-byte struct field.
     case oversizedPayload(UInt32)
     /// Operation attempted on a closed connection.
@@ -38,8 +36,6 @@ public enum SMCError: Error, CustomStringConvertible {
             return "IOKit call failed: \(Self.format(code))"
         case .smc(let result):
             return "SMC returned result \(result) (0x\(String(result, radix: 16)))"
-        case .malformedKey(let key):
-            return "malformed SMC key '\(key)': expected four printable ASCII characters"
         case .oversizedPayload(let size):
             return "SMC reported payload of \(size) bytes, maximum is 32"
         case .notConnected:

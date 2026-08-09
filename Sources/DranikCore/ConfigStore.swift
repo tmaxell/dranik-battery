@@ -95,9 +95,10 @@ public enum ConfigStore {
 /// What the daemon leaves on disk so its successor knows what it was in the
 /// middle of.
 ///
-/// Not a source of truth — the SMC is, and reconciliation reads it directly.
-/// This exists for the case where the SMC cannot be read, and for working out
-/// afterwards what a daemon was doing when it stopped.
+/// Not a source of truth, and not consulted when deciding anything — the SMC is
+/// read directly for that. This exists to work out afterwards what a daemon was
+/// doing when it stopped, which a log line alone does not survive a reboot to
+/// tell you.
 public struct DaemonState: Codable, Equatable, Sendable {
     public var gateIsClosed: Bool
     public var updatedAt: Date

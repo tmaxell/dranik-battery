@@ -30,6 +30,8 @@ public final class Daemon {
     private let watchdog: Watchdog
     private let dryRun: Bool
     private let statePath: String
+    private let configPath: String
+    private let socketPath: String
 
     private var config: ChargeConfig
     private var controllerState = ControllerState()
@@ -37,22 +39,28 @@ public final class Daemon {
     private var safetyNet: DispatchSourceTimer?
     private var signalSources: [DispatchSourceSignal] = []
     private var sleepDetector = SleepDetector()
+    private var lastReason = "starting up"
 
     private var windows = SuppressionWindows()
     private var isShuttingDown = false
+    private var control: ControlServer?
 
     public init(
         smc: SMCConnection,
         capabilities: Capabilities,
         config: ChargeConfig,
         dryRun: Bool,
-        statePath: String = StateStore.defaultPath
+        statePath: String = StateStore.defaultPath,
+        configPath: String = ConfigStore.defaultPath,
+        socketPath: String = ControlProtocol.defaultSocketPath
     ) {
         self.smc = smc
         self.capabilities = capabilities
         self.config = config
         self.dryRun = dryRun
         self.statePath = statePath
+        self.configPath = configPath
+        self.socketPath = socketPath
         self.actuator = GateActuator(
             smc: smc, specs: capabilities.chargeGate.specs, queue: queue, dryRun: dryRun
         )
@@ -104,6 +112,7 @@ public final class Daemon {
 
         startSafetyNet()
         watchdog.start()
+        startControlServer()
 
         log.notice("""
         dranikd running\(self.dryRun ? " (DRY RUN — no SMC writes)" : "", privacy: .public), \
@@ -116,8 +125,58 @@ public final class Daemon {
         }
     }
 
+    private func startControlServer() {
+        let server = ControlServer(
+            path: socketPath,
+            applyConfig: { [weak self] newConfig in
+                guard let self else { return }
+                self.queue.async {
+                    self.config = newConfig
+                    try? ConfigStore.save(newConfig, to: self.configPath)
+                    self.evaluate(trigger: "limit changed")
+                }
+            },
+            reloadConfig: { [weak self] in
+                guard let self else { return }
+                self.queue.async {
+                    let loaded = ConfigStore.load(from: self.configPath)
+                    for problem in loaded.problems {
+                        self.log.notice("config: \(problem, privacy: .public)")
+                    }
+                    self.config = loaded.config
+                    self.evaluate(trigger: "config reloaded")
+                }
+            }
+        )
+        do {
+            try server.start()
+            control = server
+            // Publish whatever the startup decision produced, so a client that
+            // connects immediately gets an answer rather than "no decision yet".
+            queue.async { self.publishReport() }
+        } catch {
+            // Not fatal. Losing the socket costs control, not safety, and a
+            // daemon that quit over it would leave the gate wherever it was.
+            log.error("control socket unavailable: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    private func publishReport() {
+        control?.publish(DaemonReport(
+            upperLimit: config.upperLimit,
+            lowerLimit: config.lowerLimit,
+            thermalCutoff: config.thermalCutoff,
+            sleepPolicy: config.sleepPolicy.rawValue,
+            gate: controllerState.gate?.rawValue ?? "unknown",
+            reason: lastReason,
+            gateIsTrusted: actuator.isTrusted,
+            decidedAt: Date()
+        ))
+    }
+
     private func shutDown(reason: String, code: Int32) -> Never {
         isShuttingDown = true
+        control?.stop()
         watchdog.stop()
         safetyNet?.cancel()
         monitor?.stop()
@@ -308,6 +367,8 @@ public final class Daemon {
         — \(decision.reason)
         """
         log.debug("\(summary, privacy: .public)")
+        lastReason = String(describing: decision.reason)
+        publishReport()
         // Unified logging drops debug records unless something is streaming, so
         // a dry run — whose whole purpose is to be watched — says it out loud.
         if dryRun {

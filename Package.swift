@@ -33,7 +33,7 @@ let package = Package(
         // reachable from a plain struct, which is why it can be tested whole.
         .target(name: "DranikCore"),
 
-        .executableTarget(name: "dranik", dependencies: ["DranikSMC", "DranikPower"]),
+        .executableTarget(name: "dranik", dependencies: ["DranikSMC", "DranikPower", "DranikCore"]),
 
         // The daemon's moving parts, in a library so the safety mechanisms can
         // be tested rather than only reasoned about.

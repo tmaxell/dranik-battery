@@ -19,6 +19,7 @@ OPTIONS
   --config <path>   Configuration file (default: \(ConfigStore.defaultPath))
   --state <path>    Where to record what it is doing (default: \(StateStore.defaultPath))
   --lock <path>     Single-instance lock (default: \(InstanceLock.defaultPath))
+  --socket <path>   Control socket (default: \(ControlProtocol.defaultSocketPath))
   --dry-run         Decide and log, but never write to the SMC. Needs no root.
 
 SAFETY
@@ -52,6 +53,7 @@ let dryRun = arguments.contains("--dry-run")
 let configPath = option("--config", default: ConfigStore.defaultPath)
 let statePath = option("--state", default: StateStore.defaultPath)
 let lockPath = option("--lock", default: InstanceLock.defaultPath)
+let socketPath = option("--socket", default: ControlProtocol.defaultSocketPath)
 
 if !dryRun && geteuid() != 0 {
     fail("writing the charge gate needs root. Use --dry-run to watch it decide instead.")
@@ -101,6 +103,8 @@ withExtendedLifetime(lock) {
         capabilities: capabilities,
         config: loaded.config,
         dryRun: dryRun,
-        statePath: statePath
+        statePath: statePath,
+        configPath: configPath,
+        socketPath: socketPath
     ).run()
 }
