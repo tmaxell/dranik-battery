@@ -270,9 +270,17 @@ public final class Daemon {
 
         guard let position = transition.position else { return }
 
-        actuator.apply(position, reason: "pre-sleep: \(transition.explanation)")
+        // The belief must follow the outcome here more than anywhere else: the
+        // machine is about to sleep for hours, and nothing will re-read the gate
+        // until it wakes.
+        guard actuator.apply(position, reason: "pre-sleep: \(transition.explanation)") else {
+            log.error("pre-sleep gate write failed — sleeping with the gate as it is")
+            controllerState.gate = actuator.readPosition()
+            return
+        }
         controllerState.gate = position
         persist(gateIsClosed: position == .closed, reason: "pre-sleep")
+        publishReport()
 
         if position == .closed {
             // Do not let the safety net undo this during the half-minute macOS
@@ -365,7 +373,6 @@ public final class Daemon {
         """
         log.debug("\(summary, privacy: .public)")
         lastReason = String(describing: decision.reason)
-        publishReport()
         // Unified logging drops debug records unless something is streaming, so
         // a dry run — whose whole purpose is to be watched — says it out loud.
         if dryRun {
@@ -373,8 +380,14 @@ public final class Daemon {
             fflush(stdout)
         }
 
-        guard decision.requiresWrite else { return }
-        applyIfAllowed(decision.position, reason: String(describing: decision.reason))
+        if decision.requiresWrite {
+            applyIfAllowed(decision.position, reason: String(describing: decision.reason))
+        }
+        // After acting, never before. Publishing the decision on its own would
+        // report a gate position that a suppression window or a refused write
+        // may have prevented — the same "believed but not true" shape that
+        // already cost this project one silent failure.
+        publishReport()
     }
 
     /// The two suppression windows, and why they point in opposite directions.
@@ -384,21 +397,35 @@ public final class Daemon {
     /// nothing may *open* it before the machine has actually gone under. Each
     /// window blocks one direction only, and neither can leave the gate shut for
     /// longer than the window itself.
-    private func applyIfAllowed(_ position: GatePosition, reason: String) {
+    /// Moves the gate if the suppression windows allow it, and brings the
+    /// controller's belief and the recorded state into line with what actually
+    /// happened — not with what was asked for.
+    ///
+    /// A write can be prevented by a window or refused outright, and recording
+    /// the intention in either case leaves `state.json` describing a machine
+    /// that does not exist. Since that file exists precisely to say afterwards
+    /// what a daemon was doing when it stopped, an optimistic entry is worse
+    /// than none.
+    @discardableResult
+    private func applyIfAllowed(_ position: GatePosition, reason: String) -> Bool {
         guard windows.allows(position, at: Date()) else {
             let why = position == .closed ? "settling after wake" : "pre-sleep barrier"
             log.debug("holding off \(position.rawValue, privacy: .public): \(why, privacy: .public)")
-            if position == .closed {
-                // The controller now believes the gate is where it asked for.
-                // Put its belief back in step with the hardware, or the next
-                // decision will conclude no write is needed.
-                controllerState.gate = actuator.readPosition()
-            }
-            return
+            controllerState.gate = actuator.readPosition()
+            return false
         }
 
-        actuator.apply(position, reason: reason)
-        persist(gateIsClosed: position == .closed, reason: reason)
+        let applied = actuator.apply(position, reason: reason)
+        if applied {
+            persist(gateIsClosed: position == .closed, reason: reason)
+        } else {
+            // Whatever the gate is now, it is not what was decided.
+            controllerState.gate = actuator.readPosition()
+            if let actual = controllerState.gate {
+                persist(gateIsClosed: actual == .closed, reason: "\(reason) — not applied")
+            }
+        }
+        return applied
     }
 
     private static func timestamp() -> String {
