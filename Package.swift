@@ -13,6 +13,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "dranik", targets: ["dranik"]),
+        .executable(name: "dranikd", targets: ["dranikd"]),
         .library(name: "DranikSMC", targets: ["DranikSMC"]),
         .library(name: "DranikPower", targets: ["DranikPower"]),
         .library(name: "DranikCore", targets: ["DranikCore"]),
@@ -33,6 +34,14 @@ let package = Package(
         .target(name: "DranikCore"),
 
         .executableTarget(name: "dranik", dependencies: ["DranikSMC", "DranikPower"]),
+
+        // The daemon's moving parts, in a library so the safety mechanisms can
+        // be tested rather than only reasoned about.
+        .target(
+            name: "DranikDaemon",
+            dependencies: ["DranikSMC", "DranikPower", "DranikCore"]
+        ),
+        .executableTarget(name: "dranikd", dependencies: ["DranikDaemon"]),
 
         // Writes to the SMC. Kept out of the `dranik` CLI so it cannot be
         // reached by accident: it must be invoked by name, as root.
@@ -55,7 +64,7 @@ let package = Package(
         // ordinary executable instead. Run it with `make test`.
         .executableTarget(
             name: "dranik-selftest",
-            dependencies: ["DranikSMC", "DranikPower", "DranikCore", "CDranikSMC"],
+            dependencies: ["DranikSMC", "DranikPower", "DranikCore", "DranikDaemon", "CDranikSMC"],
             path: "Tests/DranikSelfTest"
         ),
     ]

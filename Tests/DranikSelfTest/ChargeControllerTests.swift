@@ -264,16 +264,43 @@ func runChargeControllerTests() {
         expectTrue(result.decision.requiresWrite)
     }
 
-    test("a limit of 100 does not override heat or the adapter") {
+    test("a limit of 100 means hands off, including the rules that close") {
+        // Turning the limit off has to actually turn it off. Both of these used
+        // to close the gate, which meant a machine with limiting disabled still
+        // charged late after being plugged in — cost with no benefit, since the
+        // micro-charge rule exists only to serve a limit that is not there.
         let unlimited = ChargeConfig(upperLimit: 100)
         expectEqual(
             decide(input(99, temperature: 45), settled(.open), config: unlimited).decision.position,
-            .closed
+            .open
         )
         expectEqual(
-            decide(input(99, onAC: false), settled(.open), config: unlimited).decision.position,
-            .closed
+            decide(input(99, onAC: false), settled(.closed), config: unlimited).decision.position,
+            .open
         )
+        expectEqual(
+            decide(input(50, onAC: false, temperature: 50), settled(.closed), config: unlimited).decision.reason,
+            .limitingDisabled
+        )
+    }
+
+    test("disabling the limit clears a thermal hold rather than parking it") {
+        // Otherwise re-enabling the limit later would inherit a hold set under a
+        // configuration that no longer applies.
+        let limited = ChargeConfig(upperLimit: 80)
+        let hot = decide(input(60, temperature: 45), settled(.open), config: limited)
+        expectTrue(hot.state.isThermallyHeld)
+
+        let unlimited = decide(input(60, temperature: 45), hot.state, config: ChargeConfig(upperLimit: 100))
+        expectFalse(unlimited.state.isThermallyHeld)
+        expectEqual(unlimited.decision.position, .open)
+    }
+
+    test("the emergency floor still outranks a disabled limit, harmlessly") {
+        // Both say open, so ordering between them cannot matter — but assert it
+        // so a future reordering that puts a closing rule above the floor fails.
+        let unlimited = ChargeConfig(upperLimit: 100)
+        expectEqual(decide(input(5, onAC: false), settled(.closed), config: unlimited).decision.position, .open)
     }
 
     // MARK: - Bookkeeping

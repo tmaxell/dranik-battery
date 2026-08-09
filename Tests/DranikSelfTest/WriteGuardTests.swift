@@ -99,13 +99,15 @@ func runWriteGuardTests() {
         let spec = SMCKeySpec.chargeGateCHTE
         let before = try expectNotNil((try? smc.read(spec.key)) ?? nil)
 
-        // Writes the gate's *open* payload, which is what the key already holds
-        // whenever charging is under system control — so even if privileges were
-        // somehow granted, this could not close the gate.
-        expectEqual(before.bytes, spec.onBytes, "precondition: gate should be open")
-
+        // Writes back exactly what the key already holds. That cannot change
+        // anything whatever the gate is currently set to, even if privileges
+        // were somehow granted — which matters because the daemon may well be
+        // running and holding the gate shut while this suite runs. An earlier
+        // version wrote the gate's open payload and assumed it was already
+        // there; with a limit actually being enforced, that assumption was
+        // false and the write would have lifted the limit.
         do {
-            try smc.write(spec.key, bytes: spec.onBytes, matching: spec.expectedInfo)
+            try smc.write(spec.key, bytes: before.bytes, matching: spec.expectedInfo)
             expectTrue(false, "an unprivileged write should not succeed")
         } catch SMCError.ioKit {
             // Expected: kIOReturnNotPrivileged.

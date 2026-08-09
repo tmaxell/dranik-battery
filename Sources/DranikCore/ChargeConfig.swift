@@ -7,6 +7,20 @@ import Foundation
 /// controller reads. A configuration file, an IPC message and a test fixture all
 /// arrive through `init`, so none of them can express a limit that would strand
 /// the battery somewhere useless.
+/// What to do with the gate when the machine goes to sleep.
+///
+/// There is no third option on hardware without a firmware charge limit. The gate
+/// state survives sleep (measured), and the daemon does not run during it, so
+/// either the gate is shut and the machine will not charge overnight, or it is
+/// open and the battery charges past the limit. Both are honest; neither is free.
+public enum SleepPolicy: String, Codable, Equatable, Sendable {
+    /// Close the gate before sleeping. The limit holds; a lidded machine on AC
+    /// will not charge.
+    case holdLimit
+    /// Leave the gate open. The machine charges overnight, past the limit.
+    case allowCharge
+}
+
 public struct ChargeConfig: Equatable, Sendable {
     /// Charge is held at or below this. 100 disables limiting entirely.
     public let upperLimit: Int
@@ -15,6 +29,13 @@ public struct ChargeConfig: Equatable, Sendable {
     public let lowerLimit: Int
     /// Battery temperature in °C above which charging is held off.
     public let thermalCutoff: Double
+    /// What happens to the gate at sleep. See `SleepPolicy`.
+    public let sleepPolicy: SleepPolicy
+    /// Hold off idle sleep while charging towards the limit.
+    ///
+    /// Off by default on purpose: a laptop that will not sleep for reasons its
+    /// owner cannot see is a worse problem than a few percent of charge.
+    public let preventIdleSleepWhileCharging: Bool
 
     /// Below this, charging is permitted no matter what else is true. Not
     /// configurable: it is the backstop for the rest of the logic being wrong,
@@ -40,7 +61,9 @@ public struct ChargeConfig: Equatable, Sendable {
     public init(
         upperLimit: Int = ChargeConfig.defaultUpper,
         lowerLimit: Int? = nil,
-        thermalCutoff: Double = ChargeConfig.defaultThermalCutoff
+        thermalCutoff: Double = ChargeConfig.defaultThermalCutoff,
+        sleepPolicy: SleepPolicy = .holdLimit,
+        preventIdleSleepWhileCharging: Bool = false
     ) {
         var corrections: [String] = []
 
@@ -82,6 +105,8 @@ public struct ChargeConfig: Equatable, Sendable {
         self.upperLimit = upper
         self.lowerLimit = lower
         self.thermalCutoff = cutoff
+        self.sleepPolicy = sleepPolicy
+        self.preventIdleSleepWhileCharging = preventIdleSleepWhileCharging
         self.corrections = corrections
     }
 
