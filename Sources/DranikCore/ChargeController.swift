@@ -73,7 +73,6 @@ public enum ChargeReason: Equatable, Sendable, CustomStringConvertible {
     case onBattery
     case tooHot(temperature: Double, cutoff: Double)
     case coolingDown(temperature: Double, recoversAt: Double)
-    case cooledOff(temperature: Double)
     case limitingDisabled
     case reachedUpper(percentage: Int, upper: Int)
     case fellToLower(percentage: Int, lower: Int)
@@ -92,8 +91,6 @@ public enum ChargeReason: Equatable, Sendable, CustomStringConvertible {
             return String(format: "battery at %.1f°C, above the %.1f°C cutoff", temperature, cutoff)
         case .coolingDown(let temperature, let recoversAt):
             return String(format: "still cooling: %.1f°C, resumes below %.1f°C", temperature, recoversAt)
-        case .cooledOff(let temperature):
-            return String(format: "cooled to %.1f°C", temperature)
         case .limitingDisabled:
             return "limit is 100% — charging unrestricted"
         case .reachedUpper(let percentage, let upper):
