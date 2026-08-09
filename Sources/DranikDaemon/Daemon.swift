@@ -72,7 +72,7 @@ public final class Daemon {
             │  DRY RUN — nothing is written to the SMC.                   │
             │  The battery will charge past the limit. That is expected:  │
             │  this shows what the daemon would decide, not what it does. │
-            │  To make it act, install it:  sudo make install             │
+            │  To make it act, install it:  make install                  │
             └─────────────────────────────────────────────────────────────┘
 
             limit \(config.lowerLimit)–\(config.upperLimit)%, gate \(gateNames), \
@@ -271,6 +271,24 @@ public final class Daemon {
             log.error("battery unreadable (\(trigger, privacy: .public)) — opening the gate")
             applyIfAllowed(.open, reason: "battery unreadable")
             return
+        }
+
+        // Read where the gate actually is rather than carrying a belief forward.
+        //
+        // The belief and the hardware can part company in more ways than are
+        // worth enumerating: a write that failed, a verification that reopened
+        // the gate, anything else on the machine touching the key. Every one of
+        // them ends the same way — the controller thinks the gate is already
+        // where it wants it, decides no write is needed, and quietly stops
+        // limiting anything. Re-reading costs one SMC read per decision and
+        // removes the whole category.
+        if let actual = actuator.readPosition(), actual != controllerState.gate {
+            let believed = controllerState.gate?.rawValue ?? "unknown"
+            log.notice("""
+            gate is \(actual.rawValue, privacy: .public) but was believed \
+            \(believed, privacy: .public) — trusting the hardware
+            """)
+            controllerState.gate = actual
         }
 
         let input = ControllerInput(

@@ -10,7 +10,16 @@ FRAMEWORKS := -framework IOKit -framework CoreFoundation
 all: build
 
 ## build: compile the package
+##
+## Refuses to run as root. `make install` elevates only the install script, so
+## running the whole target under sudo would build as root and leave .build
+## owned by root — after which an ordinary `make test` cannot write to it.
 build:
+	@if [ "$$(id -u)" = "0" ]; then \
+		echo "do not build as root: run 'make install', not 'sudo make install'." >&2; \
+		echo "if .build is already root-owned: sudo chown -R \"$$SUDO_USER\" .build" >&2; \
+		exit 1; \
+	fi
 	$(SWIFT) build -c $(CONFIG)
 
 ## test: run the self-test suite
@@ -21,7 +30,8 @@ build:
 test:
 	$(SWIFT) run -c $(CONFIG) dranik-selftest
 
-## install: install dranikd as a LaunchDaemon (needs root)
+## install: install dranikd as a LaunchDaemon. Run as yourself, NOT with sudo —
+##          it elevates the install script on its own.
 install: build
 	sudo ./scripts/install.sh
 

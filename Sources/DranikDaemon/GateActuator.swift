@@ -12,9 +12,9 @@ import os
 /// inhibit bit. So every move is followed, some seconds later, by a check that
 /// says whether the mechanism is actually working.
 ///
-/// If that check ever fails the actuator stops trusting the gate entirely: it
-/// opens it and refuses to close it again. A charge limit that silently does
-/// nothing is worse than no charge limit, because it is believed.
+/// If that check fails twice running the actuator stops trusting the gate
+/// entirely: it opens it and refuses to close it again. A charge limit that
+/// silently does nothing is worse than no charge limit, because it is believed.
 public final class GateActuator {
     private let smc: SMCConnection
     private let specs: [SMCKeySpec]
@@ -22,8 +22,9 @@ public final class GateActuator {
     private let dryRun: Bool
     private let log = Logger(subsystem: "com.dranik.battery", category: "Gate")
 
-    private(set) var isTrusted = true
+    private(set) public var isTrusted = true
     private var pendingVerification: DispatchWorkItem?
+    private var consecutiveFailures = 0
 
     public init(smc: SMCConnection, specs: [SMCKeySpec], queue: DispatchQueue, dryRun: Bool) {
         self.smc = smc
@@ -112,8 +113,12 @@ public final class GateActuator {
         guard !dryRun else { return }
         pendingVerification?.cancel()
 
+        // Captured now, not read later: whether the charger was attached at the
+        // moment of the write is what decides if the check can mean anything.
+        let onACAtWrite = (try? PowerReader.snapshot())?.isExternalConnected ?? false
+
         let work = DispatchWorkItem { [weak self] in
-            self?.verify(position)
+            self?.verify(position, onACAtWrite: onACAtWrite)
         }
         pendingVerification = work
         queue.asyncAfter(
@@ -121,25 +126,34 @@ public final class GateActuator {
         )
     }
 
-    private func verify(_ expected: GatePosition) {
+    private func verify(_ expected: GatePosition, onACAtWrite: Bool) {
         guard let snapshot = try? PowerReader.snapshot() else { return }
 
-        // Only meaningful on AC. Off it, charging is stopped for the obvious
-        // reason and the inhibit bit says nothing about the gate.
-        guard snapshot.isExternalConnected else { return }
+        let verdict = GateVerification.judge(
+            expected: expected,
+            onACAtWrite: onACAtWrite,
+            onACNow: snapshot.isExternalConnected,
+            inhibitedNow: snapshot.notChargingReason?.contains(.inhibited) ?? false
+        )
 
-        let inhibited = snapshot.notChargingReason?.contains(.inhibited) ?? false
-
-        switch expected {
-        case .closed where !inhibited:
-            // The machine is on AC, we asked it to stop charging some seconds
-            // ago, and it does not report being inhibited. The gate is not
-            // doing what it claims.
-            distrust("gate reported closed but the charger is not inhibited")
-        case .open where inhibited:
-            distrust("gate reported open but the charger is still inhibited")
-        default:
+        switch verdict {
+        case .confirmed:
+            consecutiveFailures = 0
             log.debug("gate verified \(expected.rawValue, privacy: .public)")
+        case .inconclusive(let why):
+            // Not evidence of anything. Leave the failure count alone.
+            log.debug("gate check inconclusive: \(why, privacy: .public)")
+        case .contradicted(let why):
+            consecutiveFailures += 1
+            log.error("""
+            gate check failed (\(self.consecutiveFailures, privacy: .public)): \
+            \(why, privacy: .public)
+            """)
+            // One contradicted check is not enough to switch the feature off.
+            // Two in a row, both conclusive, is.
+            if consecutiveFailures >= 2 {
+                distrust(why)
+            }
         }
     }
 
@@ -155,5 +169,58 @@ public final class GateActuator {
 
     private static func hex(_ bytes: [UInt8]) -> String {
         bytes.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// Whether a gate write can be judged to have worked, and if so what the answer
+/// is.
+///
+/// Separated out because getting this wrong is expensive in both directions. Too
+/// eager and a working limit is switched off by a transient reading; too lax and
+/// a limit that does nothing is believed indefinitely.
+public enum GateVerification: Equatable, Sendable {
+    /// The evidence says the gate did what was asked.
+    case confirmed
+    /// The evidence contradicts it.
+    case contradicted(String)
+    /// There is no evidence either way, and absence of it proves nothing.
+    case inconclusive(String)
+
+    /// - Parameters:
+    ///   - expected: what the gate was set to.
+    ///   - onACAtWrite: whether the charger was attached when it was written.
+    ///   - onACNow: whether it still is.
+    ///   - inhibitedNow: whether the charger reports the software inhibit.
+    public static func judge(
+        expected: GatePosition,
+        onACAtWrite: Bool,
+        onACNow: Bool,
+        inhibitedNow: Bool
+    ) -> GateVerification {
+        // The inhibit bit only means anything on AC. Off it the charger reports
+        // `onBattery` and stops for its own reasons, which says nothing at all
+        // about the gate.
+        guard onACNow else {
+            return .inconclusive("not on AC now")
+        }
+        // And the charger has to have had the whole window to react. A gate
+        // closed while on battery, with the charger attached moments before this
+        // check, has not yet had the seven seconds the hardware takes — the
+        // charger is legitimately not inhibited yet, and reading that as a
+        // broken mechanism is how a working limit gets switched off.
+        guard onACAtWrite else {
+            return .inconclusive("charger was attached after the write")
+        }
+
+        switch expected {
+        case .closed:
+            return inhibitedNow
+                ? .confirmed
+                : .contradicted("gate set closed but the charger is not inhibited")
+        case .open:
+            return inhibitedNow
+                ? .contradicted("gate set open but the charger is still inhibited")
+                : .confirmed
+        }
     }
 }
