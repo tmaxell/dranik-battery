@@ -114,6 +114,41 @@ func runPowerEventTests() {
         expectEqual(observed, 0, "events kept arriving after stop")
     }
 
+    test("stop() drops a delivery that was already queued") {
+        // Not a property of this code but of libnotify, and one the design leans
+        // on: `stop()` is trusted to be enough, with no separate guard against a
+        // late event. Measured rather than assumed — and pinned here so that
+        // removing `notify_cancel`, or replacing it with something weaker, fails
+        // rather than quietly reintroducing a stray event at shutdown.
+        let name = "com.dranik.test.race.\(UUID().uuidString)"
+        let queue = DispatchQueue(label: "test.powerevents.race")
+        let lock = NSLock()
+        var delivered = 0
+
+        let monitor = PowerEventMonitor(queue: queue, percentChangeName: name) { _ in
+            lock.lock(); delivered += 1; lock.unlock()
+        }
+        try monitor.start()
+
+        // Occupy the queue so nothing can drain, post, and give notifyd time to
+        // hand the block over — it is only queued behind the blocker at that
+        // point, not run. Only then stop. Without the pause the token is
+        // cancelled before delivery is even attempted, and the race this exists
+        // to cover never happens.
+        let blocked = DispatchSemaphore(value: 0)
+        queue.async { blocked.wait() }
+        notify_post(name)
+        Thread.sleep(forTimeInterval: 0.3)
+        monitor.stop()
+        blocked.signal()
+
+        Thread.sleep(forTimeInterval: 0.5)
+        lock.lock()
+        let seen = delivered
+        lock.unlock()
+        expectEqual(seen, 0, "an event was delivered after stop()")
+    }
+
     test("power events compare by case") {
         expectEqual(PowerEvent.didWake, .didWake)
         expectNotEqual(PowerEvent.didWake, .percentageChanged)

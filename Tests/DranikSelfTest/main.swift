@@ -14,6 +14,7 @@ runConfigStoreTests()
 runInstanceLockTests()
 runWatchdogTests()
 runSuppressionWindowTests()
+runSleepPolicyTests()
 runGateVerificationTests()
 runControlTests()
 

@@ -162,6 +162,7 @@ public final class Daemon {
     }
 
     private func publishReport() {
+        let chargerReason = (try? PowerReader.snapshot())?.notChargingReason
         control?.publish(DaemonReport(
             upperLimit: config.upperLimit,
             lowerLimit: config.lowerLimit,
@@ -170,6 +171,7 @@ public final class Daemon {
             gate: controllerState.gate?.rawValue ?? "unknown",
             reason: lastReason,
             gateIsTrusted: actuator.isTrusted,
+            chargerReason: chargerReason.map(String.init(describing:)),
             decidedAt: Date()
         ))
     }
@@ -245,11 +247,12 @@ public final class Daemon {
     }
 
     private func handleCanSleep(_ acknowledgement: SleepAcknowledgement) {
-        guard config.preventIdleSleepWhileCharging,
-              !config.isLimitingDisabled,
-              let snapshot = try? PowerReader.snapshot(),
-              snapshot.isExternalConnected,
-              snapshot.percentage < config.upperLimit
+        guard let snapshot = try? PowerReader.snapshot(),
+              SleepPolicyDecision.shouldPreventIdleSleep(
+                  config: config,
+                  isExternalConnected: snapshot.isExternalConnected,
+                  percentage: snapshot.percentage
+              )
         else {
             acknowledgement.allow()
             return
@@ -260,27 +263,21 @@ public final class Daemon {
 
     private func handleWillSleep(_ acknowledgement: SleepAcknowledgement) {
         defer { acknowledgement.allow() }
-        guard !config.isLimitingDisabled else { return }
 
-        switch config.sleepPolicy {
-        case .holdLimit:
-            // Unconditionally, regardless of the current level. The gate state
-            // survives sleep — measured — so this is what makes the limit hold
-            // through the night, and it costs nothing when the battery is low
-            // because waking reopens it.
-            log.notice("sleeping: closing the gate to hold the limit")
-            actuator.apply(.closed, reason: "pre-sleep")
-            controllerState.gate = .closed
-            persist(gateIsClosed: true, reason: "pre-sleep")
+        let percentage = (try? PowerReader.snapshot())?.percentage ?? 100
+        let transition = SleepPolicyDecision.onWillSleep(config: config, percentage: percentage)
+        log.notice("sleeping: \(transition.explanation, privacy: .public)")
+
+        guard let position = transition.position else { return }
+
+        actuator.apply(position, reason: "pre-sleep: \(transition.explanation)")
+        controllerState.gate = position
+        persist(gateIsClosed: position == .closed, reason: "pre-sleep")
+
+        if position == .closed {
             // Do not let the safety net undo this during the half-minute macOS
             // waits before it actually sleeps.
             windows.suppressOpening(until: Date().addingTimeInterval(Self.preSleepBarrier))
-
-        case .allowCharge:
-            log.notice("sleeping: leaving the gate open, the battery may pass the limit")
-            actuator.apply(.open, reason: "pre-sleep, allowCharge")
-            controllerState.gate = .open
-            persist(gateIsClosed: false, reason: "pre-sleep, allowCharge")
         }
     }
 

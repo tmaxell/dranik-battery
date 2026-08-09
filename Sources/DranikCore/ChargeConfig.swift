@@ -9,16 +9,28 @@ import Foundation
 /// the battery somewhere useless.
 /// What to do with the gate when the machine goes to sleep.
 ///
-/// There is no third option on hardware without a firmware charge limit. The gate
-/// state survives sleep (measured), and the daemon does not run during it, so
-/// either the gate is shut and the machine will not charge overnight, or it is
-/// open and the battery charges past the limit. Both are honest; neither is free.
+/// On hardware without a firmware charge limit there is no option that costs
+/// nothing. The gate state survives sleep — measured — and the daemon does not
+/// run during it, so whatever it leaves behind is what the machine does all
+/// night.
 public enum SleepPolicy: String, Codable, Equatable, Sendable {
-    /// Close the gate before sleeping. The limit holds; a lidded machine on AC
-    /// will not charge.
+    /// Close the gate before sleeping. The limit always holds; a lidded machine
+    /// on a charger will not charge, whatever its level.
     case holdLimit
-    /// Leave the gate open. The machine charges overnight, past the limit.
+
+    /// Leave the gate open. The machine charges overnight and will pass the
+    /// limit. Charge limiting effectively applies only while awake.
     case allowCharge
+
+    /// Close the gate unless the battery is already low enough that charging
+    /// would resume anyway, in which case leave it open.
+    ///
+    /// The middle ground, and the one most people probably want: a machine put
+    /// away nearly full stays where it is, and one put away flat is ready in the
+    /// morning. The cost is that the low case may charge well past the limit,
+    /// since nothing is awake to stop it — so this trades the guarantee for the
+    /// convenience rather than avoiding the choice.
+    case chargeIfLow
 }
 
 public struct ChargeConfig: Equatable, Sendable {

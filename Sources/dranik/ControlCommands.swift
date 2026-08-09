@@ -64,11 +64,22 @@ enum ControlCommands {
             row("Limit", "\(report.lowerLimit)–\(report.upperLimit) %"),
             row("Gate", report.gate),
             row("Reason", report.reason),
+            row("Charger says", report.chargerReason ?? "-"),
             row("Sleep policy", report.sleepPolicy),
             row("Thermal cutoff", String(format: "%.0f °C", report.thermalCutoff)),
         ]
         if report.upperLimit >= 100 {
             lines.append(row("", "limiting is off — charging is unmanaged"))
+        }
+        // The charger reporting something this project cannot name means
+        // something other than this daemon is involved — macOS's own battery
+        // management being the likely candidate, since it is not readable as a
+        // setting from anywhere unprivileged.
+        if report.chargerReason?.contains("unknown") == true {
+            lines.append("")
+            lines.append("  Note: the charger reports a reason this build does not recognise.")
+            lines.append("  Something else may also be managing charging — check")
+            lines.append("  System Settings > Battery > Battery Health > Optimized Charging.")
         }
         if !report.gateIsTrusted {
             // The one state worth shouting about: the daemon is running, looks
