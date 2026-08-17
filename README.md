@@ -142,4 +142,5 @@ make daemon-dry-run    # весь цикл решений, ничего не з�
 
 ## Лицензия
 
-Не выбрана — см. открытый вопрос в `docs/05-implementation-plan.md`.
+[MIT](LICENSE). Кода из AlDente, BatFi, Battery-Toolkit или batt не заимствовано —
+только приёмы и наблюдения, разобранные в `docs/06-upstream-code-review.md`.
