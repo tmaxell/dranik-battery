@@ -25,6 +25,7 @@ public final class GateActuator {
     private(set) public var isTrusted = true
     private var pendingVerification: DispatchWorkItem?
     private var consecutiveFailures = 0
+    private var hasLoggedDistrust = false
 
     public init(smc: SMCConnection, specs: [SMCKeySpec], queue: DispatchQueue, dryRun: Bool) {
         self.smc = smc
@@ -50,7 +51,12 @@ public final class GateActuator {
     @discardableResult
     func apply(_ position: GatePosition, reason: String) -> Bool {
         if position == .closed && !isTrusted {
-            log.error("refusing to close the gate: verification failed earlier")
+            // Permanent for the life of the process, so say it once rather than
+            // on every percentage change. `dranik daemon` reports it standing.
+            if !hasLoggedDistrust {
+                hasLoggedDistrust = true
+                log.error("refusing to close the gate: verification failed earlier")
+            }
             return false
         }
 

@@ -1,3 +1,4 @@
+import DranikCore
 import DranikPower
 import DranikSMC
 import Foundation
@@ -8,8 +9,8 @@ struct StatusReport {
     let battery: BatterySnapshot
     let capabilities: Capabilities?
     let capabilitiesError: String?
-    /// Raw readings of the charge-gate keys, so the gate's actual state is
-    /// visible even though nothing writes to it yet.
+    /// Raw readings of the charge-gate keys — the hardware's own answer, not the
+    /// daemon's account of it, which is the point of having both commands.
     let gateReadings: [(key: SMCKey, value: String)]
     let telemetry: [(label: String, value: String)]
 
@@ -118,7 +119,7 @@ extension StatusReport {
         }
 
         lines.append("")
-        lines.append("Charge limiting is not implemented yet — this build only reads.")
+        lines.append(daemonHint)
 
         return lines.joined(separator: "\n")
     }
@@ -171,6 +172,15 @@ extension StatusReport {
             options: [.prettyPrinted, .sortedKeys]
         )
         return String(decoding: data, as: UTF8.self)
+    }
+
+    /// `status` reads the machine directly and says nothing about whether a
+    /// limit is being enforced. Pointing at the command that does is more useful
+    /// than leaving someone to wonder why the gate is shut.
+    private var daemonHint: String {
+        FileManager.default.fileExists(atPath: ControlProtocol.defaultSocketPath)
+            ? "A daemon is running — `dranik daemon` shows what it is doing."
+            : "No daemon is running, so nothing is limiting charge. `make install` starts one."
     }
 
     private var batteryState: String {

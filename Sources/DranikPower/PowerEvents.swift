@@ -161,6 +161,11 @@ public final class PowerEventMonitor {
 
     private func subscribeNotify(_ name: String, _ body: @escaping () -> Void) throws {
         var token: Int32 = 0
+        // No guard against delivery after `stop()` is needed: `notify_cancel`
+        // drops a block that is already queued, not only future ones. Measured —
+        // a handler posted onto a deliberately blocked queue and then cancelled
+        // never ran, over repeated trials. `stop()` alone is sufficient, and the
+        // test below pins that rather than leaving it an assumption.
         let status = notify_register_dispatch(name, &token, queue) { _ in body() }
         guard status == NOTIFY_STATUS_OK else {
             throw PowerEventError.subscriptionFailed(name: name, status: status)

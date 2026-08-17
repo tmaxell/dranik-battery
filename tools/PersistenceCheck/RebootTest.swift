@@ -95,9 +95,14 @@ enum RebootTest {
     static func check(gate: Gate) -> Never {
         guard var record = PersistenceRecord.load() else {
             // Nothing was armed; make sure the gate is open regardless and go.
-            gate.open()
+            // This is the boot-time recovery path, so a failure here is the one
+            // worth hearing about, not the one worth swallowing.
+            let failures = gate.open()
+            for failure in failures {
+                note("RECOVERY FAILED: \(failure)")
+            }
             removeBootDaemon()
-            exit(0)
+            exit(failures.isEmpty ? 0 : 2)
         }
 
         let payload = gate.read()

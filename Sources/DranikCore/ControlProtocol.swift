@@ -38,6 +38,14 @@ public struct DaemonReport: Codable, Equatable, Sendable {
     /// refuses to close it, so the limit is not being enforced — worth showing
     /// rather than leaving to be discovered.
     public var gateIsTrusted: Bool
+    /// The charger's own account of why it is not charging, as text.
+    ///
+    /// Distinct from `reason`, which is the daemon's. Where they disagree,
+    /// something other than this daemon is holding charging back — macOS's own
+    /// battery management, most likely, which is not readable as a setting from
+    /// anywhere unprivileged. Reading the effect is possible where reading the
+    /// preference is not.
+    public var chargerReason: String?
     public var decidedAt: Date
 
     public init(
@@ -48,6 +56,7 @@ public struct DaemonReport: Codable, Equatable, Sendable {
         gate: String,
         reason: String,
         gateIsTrusted: Bool,
+        chargerReason: String? = nil,
         decidedAt: Date
     ) {
         self.upperLimit = upperLimit
@@ -57,6 +66,7 @@ public struct DaemonReport: Codable, Equatable, Sendable {
         self.gate = gate
         self.reason = reason
         self.gateIsTrusted = gateIsTrusted
+        self.chargerReason = chargerReason
         self.decidedAt = decidedAt
     }
 }

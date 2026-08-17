@@ -162,6 +162,7 @@ public final class Daemon {
     }
 
     private func publishReport() {
+        let chargerReason = (try? PowerReader.snapshot())?.notChargingReason
         control?.publish(DaemonReport(
             upperLimit: config.upperLimit,
             lowerLimit: config.lowerLimit,
@@ -170,6 +171,7 @@ public final class Daemon {
             gate: controllerState.gate?.rawValue ?? "unknown",
             reason: lastReason,
             gateIsTrusted: actuator.isTrusted,
+            chargerReason: chargerReason.map(String.init(describing:)),
             decidedAt: Date()
         ))
     }
@@ -245,11 +247,12 @@ public final class Daemon {
     }
 
     private func handleCanSleep(_ acknowledgement: SleepAcknowledgement) {
-        guard config.preventIdleSleepWhileCharging,
-              !config.isLimitingDisabled,
-              let snapshot = try? PowerReader.snapshot(),
-              snapshot.isExternalConnected,
-              snapshot.percentage < config.upperLimit
+        guard let snapshot = try? PowerReader.snapshot(),
+              SleepPolicyDecision.shouldPreventIdleSleep(
+                  config: config,
+                  isExternalConnected: snapshot.isExternalConnected,
+                  percentage: snapshot.percentage
+              )
         else {
             acknowledgement.allow()
             return
@@ -260,27 +263,29 @@ public final class Daemon {
 
     private func handleWillSleep(_ acknowledgement: SleepAcknowledgement) {
         defer { acknowledgement.allow() }
-        guard !config.isLimitingDisabled else { return }
 
-        switch config.sleepPolicy {
-        case .holdLimit:
-            // Unconditionally, regardless of the current level. The gate state
-            // survives sleep — measured — so this is what makes the limit hold
-            // through the night, and it costs nothing when the battery is low
-            // because waking reopens it.
-            log.notice("sleeping: closing the gate to hold the limit")
-            actuator.apply(.closed, reason: "pre-sleep")
-            controllerState.gate = .closed
-            persist(gateIsClosed: true, reason: "pre-sleep")
+        let percentage = (try? PowerReader.snapshot())?.percentage ?? 100
+        let transition = SleepPolicyDecision.onWillSleep(config: config, percentage: percentage)
+        log.notice("sleeping: \(transition.explanation, privacy: .public)")
+
+        guard let position = transition.position else { return }
+
+        // The belief must follow the outcome here more than anywhere else: the
+        // machine is about to sleep for hours, and nothing will re-read the gate
+        // until it wakes.
+        guard actuator.apply(position, reason: "pre-sleep: \(transition.explanation)") else {
+            log.error("pre-sleep gate write failed — sleeping with the gate as it is")
+            controllerState.gate = actuator.readPosition()
+            return
+        }
+        controllerState.gate = position
+        persist(gateIsClosed: position == .closed, reason: "pre-sleep")
+        publishReport()
+
+        if position == .closed {
             // Do not let the safety net undo this during the half-minute macOS
             // waits before it actually sleeps.
             windows.suppressOpening(until: Date().addingTimeInterval(Self.preSleepBarrier))
-
-        case .allowCharge:
-            log.notice("sleeping: leaving the gate open, the battery may pass the limit")
-            actuator.apply(.open, reason: "pre-sleep, allowCharge")
-            controllerState.gate = .open
-            persist(gateIsClosed: false, reason: "pre-sleep, allowCharge")
         }
     }
 
@@ -368,7 +373,6 @@ public final class Daemon {
         """
         log.debug("\(summary, privacy: .public)")
         lastReason = String(describing: decision.reason)
-        publishReport()
         // Unified logging drops debug records unless something is streaming, so
         // a dry run — whose whole purpose is to be watched — says it out loud.
         if dryRun {
@@ -376,8 +380,14 @@ public final class Daemon {
             fflush(stdout)
         }
 
-        guard decision.requiresWrite else { return }
-        applyIfAllowed(decision.position, reason: String(describing: decision.reason))
+        if decision.requiresWrite {
+            applyIfAllowed(decision.position, reason: String(describing: decision.reason))
+        }
+        // After acting, never before. Publishing the decision on its own would
+        // report a gate position that a suppression window or a refused write
+        // may have prevented — the same "believed but not true" shape that
+        // already cost this project one silent failure.
+        publishReport()
     }
 
     /// The two suppression windows, and why they point in opposite directions.
@@ -387,21 +397,37 @@ public final class Daemon {
     /// nothing may *open* it before the machine has actually gone under. Each
     /// window blocks one direction only, and neither can leave the gate shut for
     /// longer than the window itself.
-    private func applyIfAllowed(_ position: GatePosition, reason: String) {
-        guard windows.allows(position, at: Date()) else {
+    /// Moves the gate if the suppression windows allow it, and brings the
+    /// controller's belief and the recorded state into line with what actually
+    /// happened — not with what was asked for.
+    ///
+    /// A write can be prevented by a window or refused outright, and recording
+    /// the intention in either case leaves `state.json` describing a machine
+    /// that does not exist. Since that file exists precisely to say afterwards
+    /// what a daemon was doing when it stopped, an optimistic entry is worse
+    /// than none.
+    @discardableResult
+    private func applyIfAllowed(_ position: GatePosition, reason: String) -> Bool {
+        let allowed = windows.allows(position, at: Date())
+        if !allowed {
             let why = position == .closed ? "settling after wake" : "pre-sleep barrier"
             log.debug("holding off \(position.rawValue, privacy: .public): \(why, privacy: .public)")
-            if position == .closed {
-                // The controller now believes the gate is where it asked for.
-                // Put its belief back in step with the hardware, or the next
-                // decision will conclude no write is needed.
-                controllerState.gate = actuator.readPosition()
-            }
-            return
         }
 
-        actuator.apply(position, reason: reason)
-        persist(gateIsClosed: position == .closed, reason: reason)
+        let applied = allowed && actuator.apply(position, reason: reason)
+        let outcome = GateApplication.resolve(
+            requested: position,
+            reason: reason,
+            allowed: allowed,
+            applied: applied,
+            actualGate: applied ? position : actuator.readPosition()
+        )
+
+        controllerState.gate = outcome.believedGate
+        if let record = outcome.record {
+            persist(gateIsClosed: record.gateIsClosed, reason: record.reason)
+        }
+        return applied
     }
 
     private static func timestamp() -> String {

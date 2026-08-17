@@ -14,7 +14,9 @@ runConfigStoreTests()
 runInstanceLockTests()
 runWatchdogTests()
 runSuppressionWindowTests()
+runSleepPolicyTests()
 runGateVerificationTests()
+runGateApplicationTests()
 runControlTests()
 
 // These touch the real SMC and battery. Every one of them either reads, or
