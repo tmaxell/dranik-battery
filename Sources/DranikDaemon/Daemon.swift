@@ -270,6 +270,19 @@ public final class Daemon {
 
         guard let position = transition.position else { return }
 
+        // Nothing to do if the gate is already there. Writing the value a key
+        // already holds is harmless but not free: it schedules another
+        // verification, and every verification is a chance to misjudge a working
+        // mechanism. Observed writing 01000000 over 01000000 on every sleep.
+        if actuator.readPosition() == position {
+            log.notice("gate is already \(position.rawValue, privacy: .public) — nothing to write")
+            controllerState.gate = position
+            if position == .closed {
+                windows.suppressOpening(until: Date().addingTimeInterval(Self.preSleepBarrier))
+            }
+            return
+        }
+
         // The belief must follow the outcome here more than anywhere else: the
         // machine is about to sleep for hours, and nothing will re-read the gate
         // until it wakes.

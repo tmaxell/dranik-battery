@@ -1,3 +1,4 @@
+import DranikCore
 import DranikDaemon
 import DranikSMC
 import Foundation
@@ -90,6 +91,39 @@ func runWatchdogTests() {
         let observed = stalls
         lock.unlock()
         expectEqual(observed, 0, "a stopped watchdog kept firing")
+    }
+
+    test("sleep does not count towards a stall") {
+        // The bug this exists for: the watchdog measured wall-clock time, so a
+        // machine that slept for two hours looked exactly like a controller that
+        // had wedged for two hours. It forced the gate open and killed the
+        // daemon after every sleep — twenty-five times over three days on the
+        // target machine, lifting the charge limit each time.
+        //
+        // Asserted through the clocks rather than by sleeping a machine: the
+        // stall measure must come from the clock that stops with the hardware.
+        let wall = Clocks.includingSleep()
+        let awake = Clocks.excludingSleep()
+        Thread.sleep(forTimeInterval: 0.05)
+
+        let wallElapsed = Clocks.includingSleep() - wall
+        let awakeElapsed = Clocks.excludingSleep() - awake
+        expectTrue(
+            awakeElapsed <= wallElapsed + 0.01,
+            "the awake clock must never run ahead of the wall clock"
+        )
+
+        // And a watchdog left alone for longer than its threshold, in awake
+        // time, still fires — the fix must not have disabled it.
+        let watchdog = Watchdog(
+            specs: [.chargeGateCHTE], dryRun: true,
+            stallThreshold: 0.2, checkInterval: 0.05
+        )
+        let fired = DispatchSemaphore(value: 0)
+        watchdog.onStall = { _ in fired.signal() }
+        watchdog.start()
+        defer { watchdog.stop() }
+        expectEqual(fired.wait(timeout: .now() + .seconds(5)), .success)
     }
 
     test("the shipped thresholds leave room for several missed ticks") {

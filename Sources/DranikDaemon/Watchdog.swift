@@ -1,3 +1,4 @@
+import DranikCore
 import DranikSMC
 import Foundation
 import os
@@ -28,7 +29,18 @@ public final class Watchdog {
     private let log = Logger(subsystem: "com.dranik.battery", category: "Watchdog")
 
     private let lock = NSLock()
-    private var lastProgress = Date()
+    /// Measured in awake seconds, not wall-clock ones.
+    ///
+    /// This used `Date()`, and the result was that every sleep looked like a
+    /// wedge: the machine slept for two hours, the clock advanced two hours, the
+    /// controller had made no decision because nothing was running, and the
+    /// watchdog forced the gate open and killed the daemon. Twenty-five times in
+    /// three days, each one lifting the charge limit until launchd restarted it.
+    ///
+    /// A wedged controller and a sleeping machine are indistinguishable on a
+    /// wall clock and trivially distinguishable on a clock that stops with the
+    /// machine, which is what `CLOCK_UPTIME_RAW` is.
+    private var lastProgress = Clocks.excludingSleep()
     private var timer: DispatchSourceTimer?
 
     /// Called instead of exiting, so the behaviour can be observed in a test.
@@ -52,7 +64,7 @@ public final class Watchdog {
     /// Called by the controller every time it completes a decision.
     public func recordProgress() {
         lock.lock()
-        lastProgress = Date()
+        lastProgress = Clocks.excludingSleep()
         lock.unlock()
     }
 
@@ -73,13 +85,14 @@ public final class Watchdog {
 
     private func check() {
         lock.lock()
-        let idle = Date().timeIntervalSince(lastProgress)
+        let idle = Clocks.excludingSleep() - lastProgress
         lock.unlock()
 
         guard idle > stallThreshold else { return }
 
         let message = String(
-            format: "controller has not made a decision in %.0fs — presumed stuck", idle
+            format: "controller has not made a decision in %.0fs of running time — presumed stuck",
+            idle
         )
         log.fault("\(message, privacy: .public)")
 
