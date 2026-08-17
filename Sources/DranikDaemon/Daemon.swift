@@ -408,22 +408,24 @@ public final class Daemon {
     /// than none.
     @discardableResult
     private func applyIfAllowed(_ position: GatePosition, reason: String) -> Bool {
-        guard windows.allows(position, at: Date()) else {
+        let allowed = windows.allows(position, at: Date())
+        if !allowed {
             let why = position == .closed ? "settling after wake" : "pre-sleep barrier"
             log.debug("holding off \(position.rawValue, privacy: .public): \(why, privacy: .public)")
-            controllerState.gate = actuator.readPosition()
-            return false
         }
 
-        let applied = actuator.apply(position, reason: reason)
-        if applied {
-            persist(gateIsClosed: position == .closed, reason: reason)
-        } else {
-            // Whatever the gate is now, it is not what was decided.
-            controllerState.gate = actuator.readPosition()
-            if let actual = controllerState.gate {
-                persist(gateIsClosed: actual == .closed, reason: "\(reason) — not applied")
-            }
+        let applied = allowed && actuator.apply(position, reason: reason)
+        let outcome = GateApplication.resolve(
+            requested: position,
+            reason: reason,
+            allowed: allowed,
+            applied: applied,
+            actualGate: applied ? position : actuator.readPosition()
+        )
+
+        controllerState.gate = outcome.believedGate
+        if let record = outcome.record {
+            persist(gateIsClosed: record.gateIsClosed, reason: record.reason)
         }
         return applied
     }
