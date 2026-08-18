@@ -9,7 +9,7 @@ APP_BUNDLE := $(BUILD_DIR)/Dranik.app
 APP_VERSION := $(shell sed -n 's/.*current = "\(.*\)".*/\1/p' Sources/DranikCore/Version.swift)
 AGENT_PLIST := $(HOME)/Library/LaunchAgents/com.dranik.battery.app.plist
 
-.PHONY: all build test run status dump probe tools clean help install uninstall daemon-dry-run logs gate-dry-run gate-experiment app app-run install-app uninstall-app ui-drill
+.PHONY: all build test run status dump probe tools clean help install uninstall daemon-dry-run logs gate-dry-run gate-experiment app app-run install-app uninstall-app ui-drill ui-snapshots
 
 all: build
 
@@ -144,3 +144,11 @@ help:
 ## the app's own `--check` output read back. Needs no root and no daemon.
 ui-drill: app
 	$(BUILD_DIR)/dranik-ui-drill
+
+## ui-snapshots: render every popover state to PNGs, light and dark
+##
+## The one part of this product a test cannot look at is the one people use. An
+## off-screen window renders it — including the switch and the slider, which
+## SwiftUI's own ImageRenderer replaces with placeholders.
+ui-snapshots: app
+	@$(BUILD_DIR)/DranikApp --snapshot $(BUILD_DIR)/snapshots

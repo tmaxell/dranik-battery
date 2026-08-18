@@ -20,21 +20,27 @@ struct DranikApp: App {
         // the right thing" to a question with a text answer. It is also the only
         // way to check the app against a real daemon over the real socket.
         if CommandLine.arguments.contains("--check") {
-            print(AppModel.diagnose(socketPath: Self.socketArgument()))
+            print(AppModel.diagnose(
+                socketPath: Self.value(of: "--socket") ?? ControlProtocol.defaultSocketPath
+            ))
+            exit(0)
+        }
+        if let directory = Self.value(of: "--snapshot") {
+            PopoverSnapshots.write(to: directory)
             exit(0)
         }
     }
 
-    /// `--socket` points the app at a different daemon.
+    /// `--socket` points the app at a different daemon, and `--snapshot` at a
+    /// directory to render into.
     ///
-    /// It exists for the drill: the states worth being sure about are the ones a
+    /// Both exist for the drill: the states worth being sure about are the ones a
     /// healthy daemon will not produce on demand, and the only way to see them is
     /// to talk to one that produces them deliberately.
-    private static func socketArgument() -> String {
+    private static func value(of flag: String) -> String? {
         let arguments = CommandLine.arguments
-        guard let index = arguments.firstIndex(of: "--socket"),
-              index + 1 < arguments.count else {
-            return ControlProtocol.defaultSocketPath
+        guard let index = arguments.firstIndex(of: flag), index + 1 < arguments.count else {
+            return nil
         }
         return arguments[index + 1]
     }

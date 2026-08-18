@@ -39,6 +39,7 @@ final class AppModel: ObservableObject {
     private var pollTimer: DispatchSourceTimer?
     private var pollTicks = 0
     private var isDragging = false
+    private var isPreview = false
 
     /// The last link state, reused when refreshing from the battery alone.
     private var lastLink: DaemonLink = .notRunning
@@ -66,9 +67,19 @@ final class AppModel: ObservableObject {
         refresh()
     }
 
+    /// A model frozen in one state, for `--snapshot`. Talks to nothing.
+    init(previewing testCase: PopoverSnapshots.Case) {
+        self.socketPath = ""
+        self.summary = testCase.summary
+        self.percentage = testCase.percentage
+        self.draftLimit = testCase.draftLimit
+        self.isPreview = true
+    }
+
     // MARK: - Popover lifecycle
 
     func popoverAppeared() {
+        guard !isPreview else { return }
         refresh()
         startPolling()
     }
@@ -85,7 +96,12 @@ final class AppModel: ObservableObject {
         // Sent on release, not per pixel: every `setLimit` rewrites the config
         // file and provokes a full re-evaluation in the daemon.
         let upper = Int(draftLimit.rounded())
-        rememberedLimit = upper
+        // Snap to the whole number that was sent, so the slider does not sit
+        // fractionally away from the limit now in force.
+        draftLimit = Double(upper)
+        // 100 means "stop limiting", which is not a limit to come back to.
+        // Storing it would make the switch restore 80 out of nowhere.
+        if upper < 100 { rememberedLimit = upper }
         send(ControlRequest(command: .setLimit, upper: upper))
     }
 
@@ -135,15 +151,23 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Assigns only what actually changed.
+    ///
+    /// Refreshes are frequent and almost always produce the same answer as the
+    /// last one — the charge moves a percent, nothing else does. Every
+    /// assignment to a `@Published` property republishes whether or not the
+    /// value differs, which redraws the status item and the popover for nothing.
+    /// Three cheap comparisons remove that.
     private func apply(_ new: MenuBarSummary, _ facts: BatteryFacts?) {
-        summary = new
-        percentage = facts?.percentage
+        if summary != new { summary = new }
+        if percentage != facts?.percentage { percentage = facts?.percentage }
 
-        if new.isLimiting {
+        if new.isLimiting && rememberedLimit != new.upperLimit {
             rememberedLimit = new.upperLimit
         }
         guard !isDragging else { return }
-        draftLimit = Double(new.isLimiting ? new.upperLimit : rememberedLimit)
+        let wanted = Double(new.isLimiting ? new.upperLimit : rememberedLimit)
+        if draftLimit != wanted { draftLimit = wanted }
     }
 
     /// One gather, rendered as text. See `--check` in `DranikApp`.
