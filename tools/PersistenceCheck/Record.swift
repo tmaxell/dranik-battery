@@ -1,3 +1,4 @@
+import DranikSMC
 import Foundation
 
 /// What the reboot test leaves behind so the two halves — before the reboot and
@@ -53,9 +54,7 @@ struct PersistenceRecord: Codable {
     }
 }
 
-func hex(_ bytes: [UInt8]) -> String {
-    bytes.map { String(format: "%02x", $0) }.joined()
-}
+func hex(_ bytes: [UInt8]) -> String { bytes.hexString }
 
 func stamp() -> String {
     ISO8601DateFormatter().string(from: Date())

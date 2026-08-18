@@ -66,7 +66,7 @@ public enum SMCValue: Equatable, CustomStringConvertible, Sendable {
         case .signed(let value): return String(value)
         case .floating(let value): return String(format: "%.3f", value)
         case .flag(let value): return value ? "true" : "false"
-        case .raw(let bytes): return bytes.map { String(format: "%02x", $0) }.joined()
+        case .raw(let bytes): return bytes.hexString
         }
     }
 
@@ -80,5 +80,16 @@ public enum SMCValue: Equatable, CustomStringConvertible, Sendable {
         case .flag(let value): return value ? 1 : 0
         case .raw: return nil
         }
+    }
+}
+
+public extension Collection where Element == UInt8 {
+    /// Lower-case hex, no separators — the form SMC payloads are quoted in
+    /// everywhere: logs, the key dump, error messages, this project's docs.
+    ///
+    /// Was written out longhand in eight places, which is seven opportunities
+    /// for two of them to disagree about what `01000000` looks like.
+    var hexString: String {
+        map { String(format: "%02x", $0) }.joined()
     }
 }

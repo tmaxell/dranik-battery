@@ -57,14 +57,11 @@ public enum SMCError: Error, CustomStringConvertible {
         case .writeNotApplied(let key, let wrote, let read):
             return """
             SMC key '\(key)' reported a successful write but reads back \
-            \(hex(read)) instead of \(hex(wrote))
+            \(read.hexString) instead of \(wrote.hexString)
             """
         }
     }
 
-    private func hex(_ bytes: [UInt8]) -> String {
-        bytes.map { String(format: "%02x", $0) }.joined()
-    }
 
     private static func format(_ code: kern_return_t) -> String {
         let hex = String(format: "0x%08x", UInt32(bitPattern: code))

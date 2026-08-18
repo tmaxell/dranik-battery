@@ -120,8 +120,8 @@ public final class SMCConnection {
                 dr_smc_param_set_bytes(&input, buffer.baseAddress, expected.size)
             }
 
-            let hexBefore = Self.hex(before.bytes)
-            let hexWanted = Self.hex(bytes)
+            let hexBefore = before.bytes.hexString
+            let hexWanted = bytes.hexString
             log.notice("""
             SMC write \(key.description, privacy: .public): \
             \(hexBefore, privacy: .public) -> \(hexWanted, privacy: .public)
@@ -134,7 +134,7 @@ public final class SMCConnection {
 
             let after = try readLocked(key, info: live)
             guard after.bytes == bytes else {
-                let hexAfter = Self.hex(after.bytes)
+                let hexAfter = after.bytes.hexString
                 log.fault("""
                 SMC write \(key.description, privacy: .public) not applied: \
                 reads \(hexAfter, privacy: .public), wanted \(hexWanted, privacy: .public)
@@ -193,10 +193,6 @@ public final class SMCConnection {
             dr_smc_param_get_bytes(pointer, &bytes, info.size)
         }
         return SMCReading(key: key, info: info, bytes: bytes)
-    }
-
-    static func hex(_ bytes: [UInt8]) -> String {
-        bytes.map { String(format: "%02x", $0) }.joined()
     }
 
     private func keyInfoLocked(_ key: SMCKey) throws -> SMCKeyInfo? {

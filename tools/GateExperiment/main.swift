@@ -130,7 +130,7 @@ dranik-gate-experiment\(dryRun ? " (DRY RUN — nothing will be written)" : "")
   battery     \(battery.percentage) %, \
 \(battery.isCharging ? "charging" : battery.isExternalConnected ? "on AC, not charging" : "on battery"), \
 \(battery.amperage) mA
-  will write  \(specs.map { "\($0.key)=\($0.offBytes.map { String(format: "%02x", $0) }.joined())" }.joined(separator: " "))
+  will write  \(specs.map { "\($0.key)=\($0.offBytes.hexString)" }.joined(separator: " "))
   then        restore after at most \(min(deadlineSeconds, Experiment.maxSeconds))s, whatever happens
 
 """)

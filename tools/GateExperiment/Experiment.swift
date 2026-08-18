@@ -278,9 +278,7 @@ final class Experiment {
 
     // MARK: - Helpers
 
-    private func hex(_ bytes: [UInt8]) -> String {
-        bytes.map { String(format: "%02x", $0) }.joined()
-    }
+    private func hex(_ bytes: [UInt8]) -> String { bytes.hexString }
 
     private func log(_ message: String) {
         let stamp = ISO8601DateFormatter().string(from: Date())
