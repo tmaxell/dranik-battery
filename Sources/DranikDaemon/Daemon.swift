@@ -40,6 +40,7 @@ public final class Daemon {
     private var signalSources: [DispatchSourceSignal] = []
     private var sleepDetector = SleepDetector()
     private var lastReason = "starting up"
+    private var lastReasonCode = "unknown"
 
     private var windows = SuppressionWindows()
     private var isShuttingDown = false
@@ -174,6 +175,7 @@ public final class Daemon {
                 reason: lastReason,
                 gateIsTrusted: actuator.isTrusted,
                 chargerReason: chargerReason.map(String.init(describing:)),
+                reasonCode: lastReasonCode,
                 limitingIsSupported: capabilities.chargeGate.isSupported,
                 preventIdleSleepWhileCharging: config.preventIdleSleepWhileCharging,
                 decidedAt: Date()
@@ -392,6 +394,7 @@ public final class Daemon {
         """
         log.debug("\(summary, privacy: .public)")
         lastReason = String(describing: decision.reason)
+        lastReasonCode = decision.reason.code
         // Unified logging drops debug records unless something is streaming, so
         // a dry run — whose whole purpose is to be watched — says it out loud.
         if dryRun {

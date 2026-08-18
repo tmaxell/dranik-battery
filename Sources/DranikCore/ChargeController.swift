@@ -79,6 +79,27 @@ public enum ChargeReason: Equatable, Sendable, CustomStringConvertible {
     case withinBand(percentage: Int, lower: Int, upper: Int)
     case initialTopUp(percentage: Int, upper: Int)
 
+    /// A stable identifier for *what* happened, as opposed to `description`,
+    /// which is prose written for a person and may be reworded at any time.
+    ///
+    /// A client that has to behave differently per reason — an icon, a colour, a
+    /// warning — must branch on this. Matching on the prose was the alternative,
+    /// and it breaks silently the first time a sentence is improved.
+    public var code: String {
+        switch self {
+        case .staleReading: return "staleReading"
+        case .emergencyFloor: return "emergencyFloor"
+        case .onBattery: return "onBattery"
+        case .tooHot: return "tooHot"
+        case .coolingDown: return "coolingDown"
+        case .limitingDisabled: return "limitingDisabled"
+        case .reachedUpper: return "reachedUpper"
+        case .fellToLower: return "fellToLower"
+        case .withinBand: return "withinBand"
+        case .initialTopUp: return "initialTopUp"
+        }
+    }
+
     public var description: String {
         switch self {
         case .staleReading(let age):

@@ -55,6 +55,11 @@ public struct DaemonReport: Codable, Equatable, Sendable {
     /// Reported so that a client changing the limit can put it back, and so that
     /// a laptop refusing to sleep has a visible reason.
     public var preventIdleSleepWhileCharging: Bool
+    /// `ChargeReason.code` for the decision `reason` describes in prose.
+    ///
+    /// A client showing an icon or a warning branches on this; matching on the
+    /// prose would break the first time a sentence is improved.
+    public var reasonCode: String
     /// The daemon's own version. See `DranikVersion` for why a client cares.
     public var version: String
     public var decidedAt: Date
@@ -68,6 +73,7 @@ public struct DaemonReport: Codable, Equatable, Sendable {
         reason: String,
         gateIsTrusted: Bool,
         chargerReason: String? = nil,
+        reasonCode: String = "unknown",
         limitingIsSupported: Bool = true,
         preventIdleSleepWhileCharging: Bool = false,
         version: String = DranikVersion.current,
@@ -81,6 +87,7 @@ public struct DaemonReport: Codable, Equatable, Sendable {
         self.reason = reason
         self.gateIsTrusted = gateIsTrusted
         self.chargerReason = chargerReason
+        self.reasonCode = reasonCode
         self.limitingIsSupported = limitingIsSupported
         self.preventIdleSleepWhileCharging = preventIdleSleepWhileCharging
         self.version = version
@@ -89,7 +96,7 @@ public struct DaemonReport: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case upperLimit, lowerLimit, thermalCutoff, sleepPolicy, gate, reason
-        case gateIsTrusted, chargerReason, limitingIsSupported
+        case gateIsTrusted, chargerReason, reasonCode, limitingIsSupported
         case preventIdleSleepWhileCharging, version, decidedAt
     }
 
@@ -121,6 +128,7 @@ public struct DaemonReport: Codable, Equatable, Sendable {
         preventIdleSleepWhileCharging = try container.decodeIfPresent(
             Bool.self, forKey: .preventIdleSleepWhileCharging
         ) ?? false
+        reasonCode = try container.decodeIfPresent(String.self, forKey: .reasonCode) ?? "unknown"
         version = try container.decodeIfPresent(String.self, forKey: .version) ?? "unknown"
     }
 }
