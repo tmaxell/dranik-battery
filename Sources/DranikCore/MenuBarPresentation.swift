@@ -78,6 +78,26 @@ public struct MenuBarSummary: Equatable, Sendable {
     public let isLimiting: Bool
     public let upperLimit: Int
     public let lowerLimit: Int
+
+    public init(
+        headline: String,
+        detail: String?,
+        icon: Icon,
+        tone: Tone,
+        controlsAreEnabled: Bool,
+        isLimiting: Bool,
+        upperLimit: Int,
+        lowerLimit: Int
+    ) {
+        self.headline = headline
+        self.detail = detail
+        self.icon = icon
+        self.tone = tone
+        self.controlsAreEnabled = controlsAreEnabled
+        self.isLimiting = isLimiting
+        self.upperLimit = upperLimit
+        self.lowerLimit = lowerLimit
+    }
 }
 
 public enum MenuBarPresentation {
@@ -92,33 +112,28 @@ public enum MenuBarPresentation {
     /// project exists to avoid, and it must not be reported as a calm state.
     public static func summary(link: DaemonLink, battery: BatteryFacts?) -> MenuBarSummary {
         switch link {
-        case .notRunning:
-            return MenuBarSummary(
-                headline: "Daemon not running",
-                detail: "Charging is not being limited.",
-                icon: .warning,
-                tone: .caution,
-                controlsAreEnabled: false,
-                isLimiting: false,
-                upperLimit: fallbackLimits.upper,
-                lowerLimit: fallbackLimits.lower
-            )
-
-        case .unreachable(let why):
-            return MenuBarSummary(
-                headline: "Daemon not responding",
-                detail: why,
-                icon: .warning,
-                tone: .caution,
-                controlsAreEnabled: false,
-                isLimiting: false,
-                upperLimit: fallbackLimits.upper,
-                lowerLimit: fallbackLimits.lower
-            )
-
         case .connected(let report):
             return connected(report, battery)
+        case .notRunning:
+            return offline("Daemon not running", "Charging is not being limited.")
+        case .unreachable(let why):
+            return offline("Daemon not responding", why)
         }
+    }
+
+    /// Nothing to ask and nothing to command: the limits shown are a resting
+    /// place for a disabled slider, not a claim about how the machine is set up.
+    private static func offline(_ headline: String, _ detail: String) -> MenuBarSummary {
+        MenuBarSummary(
+            headline: headline,
+            detail: detail,
+            icon: .warning,
+            tone: .caution,
+            controlsAreEnabled: false,
+            isLimiting: false,
+            upperLimit: fallbackLimits.upper,
+            lowerLimit: fallbackLimits.lower
+        )
     }
 
     private static func connected(
