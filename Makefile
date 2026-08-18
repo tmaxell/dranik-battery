@@ -4,8 +4,12 @@ CONFIG     ?= release
 BUILD_DIR  := .build/$(CONFIG)
 TOOLS_DIR  := .build/tools
 FRAMEWORKS := -framework IOKit -framework CoreFoundation
+APP_BUNDLE := $(BUILD_DIR)/Dranik.app
+# One source of truth for the version: the constant both halves report.
+APP_VERSION := $(shell sed -n 's/.*current = "\(.*\)".*/\1/p' Sources/DranikCore/Version.swift)
+AGENT_PLIST := $(HOME)/Library/LaunchAgents/com.dranik.battery.app.plist
 
-.PHONY: all build test run status dump probe tools clean help install uninstall daemon-dry-run logs gate-dry-run gate-experiment
+.PHONY: all build test run status dump probe tools clean help install uninstall daemon-dry-run logs gate-dry-run gate-experiment app app-run install-app uninstall-app
 
 all: build
 
@@ -38,6 +42,50 @@ install: build
 ## uninstall: stop it, confirm the gate is open, then remove it (needs root)
 uninstall:
 	sudo ./scripts/uninstall.sh
+
+## app: assemble the menu bar app bundle in .build/
+##
+## No Xcode: SwiftUI is in the Command Line Tools SDK, and an app bundle is a
+## directory with an Info.plist and a binary in it. Signed ad-hoc, which is all a
+## locally built and locally run app needs — the daemon already did the
+## privileged part, so the app needs no entitlements and no Developer ID.
+app: build
+	@rm -rf "$(APP_BUNDLE)"
+	@mkdir -p "$(APP_BUNDLE)/Contents/MacOS"
+	@cp "$(BUILD_DIR)/DranikApp" "$(APP_BUNDLE)/Contents/MacOS/Dranik"
+	@sed 's/__VERSION__/$(APP_VERSION)/g' scripts/Info.plist > "$(APP_BUNDLE)/Contents/Info.plist"
+	@codesign --force --sign - "$(APP_BUNDLE)"
+	@echo "built $(APP_BUNDLE) (version $(APP_VERSION))"
+
+## app-run: build the app and launch it from .build, without installing
+app-run: app
+	@pkill -f "Dranik.app/Contents/MacOS/Dranik" 2>/dev/null || true
+	open "$(APP_BUNDLE)"
+
+## install-app: put the app in /Applications and start it at login
+##
+## Needs no root: it is an ordinary user application talking to a socket the
+## daemon already opened to the admin group.
+install-app: app
+	@pkill -f "Dranik.app/Contents/MacOS/Dranik" 2>/dev/null || true
+	rm -rf /Applications/Dranik.app
+	cp -R "$(APP_BUNDLE)" /Applications/Dranik.app
+	@mkdir -p "$(HOME)/Library/LaunchAgents"
+	cp scripts/com.dranik.battery.app.plist "$(AGENT_PLIST)"
+	@launchctl bootout gui/$$(id -u)/com.dranik.battery.app 2>/dev/null || true
+	launchctl bootstrap gui/$$(id -u) "$(AGENT_PLIST)"
+	@echo "installed — the battery icon is in the menu bar"
+
+## uninstall-app: remove the app and stop it starting at login
+##
+## Leaves the daemon alone: the limit goes on being enforced without the GUI,
+## which is the point of the GUI not being where the logic lives.
+uninstall-app:
+	@launchctl bootout gui/$$(id -u)/com.dranik.battery.app 2>/dev/null || true
+	rm -f "$(AGENT_PLIST)"
+	@pkill -f "Dranik.app/Contents/MacOS/Dranik" 2>/dev/null || true
+	rm -rf /Applications/Dranik.app
+	@echo "removed — the daemon is untouched"
 
 ## daemon-dry-run: watch the daemon decide. It NEVER writes to the SMC, so the
 ##                  battery WILL charge past the limit. Needs no root. Ctrl-C to stop,
