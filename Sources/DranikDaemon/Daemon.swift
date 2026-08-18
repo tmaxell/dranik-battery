@@ -163,17 +163,22 @@ public final class Daemon {
 
     private func publishReport() {
         let chargerReason = (try? PowerReader.snapshot())?.notChargingReason
-        control?.publish(DaemonReport(
-            upperLimit: config.upperLimit,
-            lowerLimit: config.lowerLimit,
-            thermalCutoff: config.thermalCutoff,
-            sleepPolicy: config.sleepPolicy.rawValue,
-            gate: controllerState.gate?.rawValue ?? "unknown",
-            reason: lastReason,
-            gateIsTrusted: actuator.isTrusted,
-            chargerReason: chargerReason.map(String.init(describing:)),
-            decidedAt: Date()
-        ))
+        control?.publish(
+            DaemonReport(
+                upperLimit: config.upperLimit,
+                lowerLimit: config.lowerLimit,
+                thermalCutoff: config.thermalCutoff,
+                sleepPolicy: config.sleepPolicy.rawValue,
+                gate: controllerState.gate?.rawValue ?? "unknown",
+                reason: lastReason,
+                gateIsTrusted: actuator.isTrusted,
+                chargerReason: chargerReason.map(String.init(describing:)),
+                limitingIsSupported: capabilities.chargeGate.isSupported,
+                preventIdleSleepWhileCharging: config.preventIdleSleepWhileCharging,
+                decidedAt: Date()
+            ),
+            config: config
+        )
     }
 
     private func shutDown(reason: String, code: Int32) -> Never {

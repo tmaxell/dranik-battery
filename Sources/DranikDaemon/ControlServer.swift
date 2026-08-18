@@ -46,8 +46,11 @@ public final class ControlServer {
         stop()
     }
 
-    public func publish(_ report: DaemonReport) {
-        snapshot.set(report)
+    /// The config travels with the report rather than being reconstructed from
+    /// it. Reconstructing was the bug: a report is a rendering, and a field a
+    /// rendering happens not to carry comes back as a default.
+    public func publish(_ report: DaemonReport, config: ChargeConfig) {
+        snapshot.set(report, config: config)
     }
 
     public func start() throws {
@@ -154,24 +157,29 @@ public final class ControlServer {
             return ControlResponse(ok: true, report: report)
 
         case .disable:
-            return change(to: ChargeConfig(upperLimit: 100), asked: "disable")
+            guard let current = snapshot.config() else {
+                return .failure("the daemon has not reached a decision yet")
+            }
+            // `.with` and not a fresh `ChargeConfig`: turning limiting off is a
+            // statement about the limit and nothing else. Rebuilding the config
+            // here used to reset the thermal cutoff, the sleep policy and
+            // `preventIdleSleepWhileCharging` to defaults — and then write them
+            // to disk, so `dranik off` silently discarded them for good.
+            return change(to: current.with(upperLimit: 100), asked: "disable")
 
         case .setLimit:
             guard let upper = request.upper else {
                 return .failure("setLimit needs an upper limit")
             }
-            guard let current = snapshot.get() else {
+            guard let current = snapshot.config() else {
                 return .failure("the daemon has not reached a decision yet")
             }
-            // Built through the same validating initialiser as every other path,
+            // Still through the same validating initialiser as every other path,
             // so the socket is not a way around the bounds.
-            let config = ChargeConfig(
-                upperLimit: upper,
-                lowerLimit: request.lower,
-                thermalCutoff: current.thermalCutoff,
-                sleepPolicy: SleepPolicy(rawValue: current.sleepPolicy) ?? .holdLimit
+            return change(
+                to: current.with(upperLimit: upper, lowerLimit: request.lower),
+                asked: "setLimit \(upper)"
             )
-            return change(to: config, asked: "setLimit \(upper)")
 
         case .reload:
             reloadConfig()
@@ -241,10 +249,12 @@ public enum ControlServerError: Error, CustomStringConvertible {
 private final class SnapshotBox {
     private let lock = NSLock()
     private var value: DaemonReport?
+    private var configuration: ChargeConfig?
 
-    func set(_ report: DaemonReport) {
+    func set(_ report: DaemonReport, config: ChargeConfig) {
         lock.lock()
         value = report
+        configuration = config
         lock.unlock()
     }
 
@@ -252,5 +262,11 @@ private final class SnapshotBox {
         lock.lock()
         defer { lock.unlock() }
         return value
+    }
+
+    func config() -> ChargeConfig? {
+        lock.lock()
+        defer { lock.unlock() }
+        return configuration
     }
 }
