@@ -122,6 +122,49 @@ public struct ChargeConfig: Equatable, Sendable {
         self.corrections = corrections
     }
 
+    /// A copy with some fields changed and the rest carried over.
+    ///
+    /// This exists because the alternative — building a fresh `ChargeConfig` with
+    /// the one field the caller cares about — silently reverts every field it
+    /// does not mention to a default. That was not hypothetical: `disable` used
+    /// to reset the thermal cutoff, the sleep policy and
+    /// `preventIdleSleepWhileCharging`, and the result was then written to disk.
+    ///
+    /// Everything still goes through the validating initialiser, so this is a
+    /// way to say what changes, not a way around the bounds.
+    public func with(
+        upperLimit: Int? = nil,
+        lowerLimit: Int? = nil,
+        thermalCutoff: Double? = nil,
+        sleepPolicy: SleepPolicy? = nil,
+        preventIdleSleepWhileCharging: Bool? = nil
+    ) -> ChargeConfig {
+        let upper = upperLimit ?? self.upperLimit
+
+        // A new upper limit says nothing about where charging should resume, so
+        // keep the existing resume point where it still fits below the new limit,
+        // and otherwise carry the band's *width* across. Falling back to the
+        // default hysteresis instead would quietly discard a band that had been
+        // widened or narrowed on purpose.
+        let lower: Int
+        if let lowerLimit {
+            lower = lowerLimit
+        } else if self.lowerLimit >= Self.lowerFloor && self.lowerLimit <= upper - 2 {
+            lower = self.lowerLimit
+        } else {
+            lower = upper - (self.upperLimit - self.lowerLimit)
+        }
+
+        return ChargeConfig(
+            upperLimit: upper,
+            lowerLimit: lower,
+            thermalCutoff: thermalCutoff ?? self.thermalCutoff,
+            sleepPolicy: sleepPolicy ?? self.sleepPolicy,
+            preventIdleSleepWhileCharging: preventIdleSleepWhileCharging
+                ?? self.preventIdleSleepWhileCharging
+        )
+    }
+
     /// True when the user has asked for no limiting at all.
     public var isLimitingDisabled: Bool {
         upperLimit >= 100

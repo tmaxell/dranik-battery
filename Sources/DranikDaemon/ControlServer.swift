@@ -32,22 +32,33 @@ public final class ControlServer {
     private let applyConfig: (ChargeConfig) -> Void
     private let reloadConfig: () -> Void
 
+    /// `initialConfig` is what the daemon loaded at startup, so that a command
+    /// arriving before the first decision has something to modify.
+    ///
+    /// Without it `disable` would have to refuse until a decision was published,
+    /// and `disable` is the way out when something is wrong — the last command
+    /// that should depend on the daemon being healthy enough to have decided.
     public init(
         path: String = ControlProtocol.defaultSocketPath,
+        initialConfig: ChargeConfig,
         applyConfig: @escaping (ChargeConfig) -> Void,
         reloadConfig: @escaping () -> Void
     ) {
         self.path = path
         self.applyConfig = applyConfig
         self.reloadConfig = reloadConfig
+        snapshot.setConfig(initialConfig)
     }
 
     deinit {
         stop()
     }
 
-    public func publish(_ report: DaemonReport) {
-        snapshot.set(report)
+    /// The config travels with the report rather than being reconstructed from
+    /// it. Reconstructing was the bug: a report is a rendering, and a field a
+    /// rendering happens not to carry comes back as a default.
+    public func publish(_ report: DaemonReport, config: ChargeConfig) {
+        snapshot.set(report, config: config)
     }
 
     public func start() throws {
@@ -154,24 +165,25 @@ public final class ControlServer {
             return ControlResponse(ok: true, report: report)
 
         case .disable:
-            return change(to: ChargeConfig(upperLimit: 100), asked: "disable")
+            let current = snapshot.config()
+            // `.with` and not a fresh `ChargeConfig`: turning limiting off is a
+            // statement about the limit and nothing else. Rebuilding the config
+            // here used to reset the thermal cutoff, the sleep policy and
+            // `preventIdleSleepWhileCharging` to defaults — and then write them
+            // to disk, so `dranik off` silently discarded them for good.
+            return change(to: current.with(upperLimit: 100), asked: "disable")
 
         case .setLimit:
             guard let upper = request.upper else {
                 return .failure("setLimit needs an upper limit")
             }
-            guard let current = snapshot.get() else {
-                return .failure("the daemon has not reached a decision yet")
-            }
-            // Built through the same validating initialiser as every other path,
+            let current = snapshot.config()
+            // Still through the same validating initialiser as every other path,
             // so the socket is not a way around the bounds.
-            let config = ChargeConfig(
-                upperLimit: upper,
-                lowerLimit: request.lower,
-                thermalCutoff: current.thermalCutoff,
-                sleepPolicy: SleepPolicy(rawValue: current.sleepPolicy) ?? .holdLimit
+            return change(
+                to: current.with(upperLimit: upper, lowerLimit: request.lower),
+                asked: "setLimit \(upper)"
             )
-            return change(to: config, asked: "setLimit \(upper)")
 
         case .reload:
             reloadConfig()
@@ -241,10 +253,19 @@ public enum ControlServerError: Error, CustomStringConvertible {
 private final class SnapshotBox {
     private let lock = NSLock()
     private var value: DaemonReport?
+    /// Never absent: seeded with what the daemon loaded before the socket opened.
+    private var configuration = ChargeConfig()
 
-    func set(_ report: DaemonReport) {
+    func set(_ report: DaemonReport, config: ChargeConfig) {
         lock.lock()
         value = report
+        configuration = config
+        lock.unlock()
+    }
+
+    func setConfig(_ config: ChargeConfig) {
+        lock.lock()
+        configuration = config
         lock.unlock()
     }
 
@@ -252,5 +273,11 @@ private final class SnapshotBox {
         lock.lock()
         defer { lock.unlock() }
         return value
+    }
+
+    func config() -> ChargeConfig {
+        lock.lock()
+        defer { lock.unlock() }
+        return configuration
     }
 }

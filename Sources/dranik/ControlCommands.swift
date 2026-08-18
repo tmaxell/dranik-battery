@@ -68,8 +68,18 @@ enum ControlCommands {
             row("Sleep policy", report.sleepPolicy),
             row("Thermal cutoff", String(format: "%.0f °C", report.thermalCutoff)),
         ]
+        if report.preventIdleSleepWhileCharging {
+            lines.append(row("Idle sleep", "held off while charging"))
+        }
         if report.upperLimit >= 100 {
             lines.append(row("", "limiting is off — charging is unmanaged"))
+        }
+        if !report.limitingIsSupported {
+            // Otherwise identical on screen to a gate that is open on purpose,
+            // which is the one reading that must not be left available.
+            lines.append("")
+            lines.append("  NOTE: this Mac has no charge gate this build recognises.")
+            lines.append("  The daemon runs and reports, but it is limiting nothing.")
         }
         // The charger reporting something this project cannot name means
         // something other than this daemon is involved — macOS's own battery
@@ -88,6 +98,14 @@ enum ControlCommands {
             lines.append("  WARNING: the daemon has stopped trusting the charge gate.")
             lines.append("  It will not close it again. Charging is NOT being limited.")
             lines.append("  Restart it: sudo launchctl kickstart -k system/com.dranik.battery")
+        }
+        if report.version != DranikVersion.current {
+            // Installing does not restart the daemon, so this is the ordinary
+            // state after an upgrade rather than a strange one.
+            lines.append("")
+            lines.append("  NOTE: the daemon is version \(report.version), this is "
+                + "\(DranikVersion.current).")
+            lines.append("  Restart it to match: sudo launchctl kickstart -k system/com.dranik.battery")
         }
         return lines.joined(separator: "\n")
     }
