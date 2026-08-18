@@ -128,6 +128,7 @@ public final class Daemon {
     private func startControlServer() {
         let server = ControlServer(
             path: socketPath,
+            initialConfig: config,
             applyConfig: { [weak self] newConfig in
                 guard let self else { return }
                 self.queue.async {

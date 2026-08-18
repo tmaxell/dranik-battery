@@ -12,7 +12,9 @@ private func withServer(
     _ body: (String, ControlServer) throws -> Void
 ) throws {
     let path = NSTemporaryDirectory() + "dranik-\(UUID().uuidString).sock"
-    let server = ControlServer(path: path, applyConfig: apply, reloadConfig: reload)
+    let server = ControlServer(
+        path: path, initialConfig: config, applyConfig: apply, reloadConfig: reload
+    )
     try server.start()
     defer { server.stop() }
     if let publish { server.publish(publish, config: config) }
@@ -170,7 +172,9 @@ func runControlTests() {
         FileManager.default.createFile(atPath: path, contents: Data())
         defer { try? FileManager.default.removeItem(atPath: path) }
 
-        let server = ControlServer(path: path, applyConfig: { _ in }, reloadConfig: {})
+        let server = ControlServer(
+            path: path, initialConfig: ChargeConfig(), applyConfig: { _ in }, reloadConfig: {}
+        )
         try server.start()
         defer { server.stop() }
         server.publish(report(), config: ChargeConfig())
@@ -180,7 +184,9 @@ func runControlTests() {
 
     test("stopping removes the socket so the next start is clean") {
         let path = NSTemporaryDirectory() + "dranik-\(UUID().uuidString).sock"
-        let server = ControlServer(path: path, applyConfig: { _ in }, reloadConfig: {})
+        let server = ControlServer(
+            path: path, initialConfig: ChargeConfig(), applyConfig: { _ in }, reloadConfig: {}
+        )
         try server.start()
         expectTrue(FileManager.default.fileExists(atPath: path))
         server.stop()
@@ -270,6 +276,27 @@ func runControlTests() {
         // 70 no longer fits under 60, so the width carries across rather than
         // collapsing to the default hysteresis.
         expectEqual(seen?.lowerLimit, 40)
+    }
+
+    test("disable works before the daemon has decided anything") {
+        // The way out must not depend on the daemon being well enough to have
+        // reached a decision — that is when it is most likely to be needed.
+        let lock = NSLock()
+        var applied: ChargeConfig?
+        try withServer(
+            apply: { config in lock.lock(); applied = config; lock.unlock() },
+            publish: nil,
+            config: customConfig()
+        ) { path, _ in
+            expectTrue(try ControlClient.send(ControlRequest(command: .disable), to: path).ok)
+        }
+        lock.lock()
+        let seen = applied
+        lock.unlock()
+
+        let config = try expectNotNil(seen, "disable must reach the daemon regardless")
+        expectTrue(config.isLimitingDisabled)
+        expectEqual(config.thermalCutoff, 45, "and still not reset anything on the way")
     }
 
     // MARK: - Fields a client needs to tell states apart

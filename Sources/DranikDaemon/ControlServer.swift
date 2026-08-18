@@ -32,14 +32,22 @@ public final class ControlServer {
     private let applyConfig: (ChargeConfig) -> Void
     private let reloadConfig: () -> Void
 
+    /// `initialConfig` is what the daemon loaded at startup, so that a command
+    /// arriving before the first decision has something to modify.
+    ///
+    /// Without it `disable` would have to refuse until a decision was published,
+    /// and `disable` is the way out when something is wrong — the last command
+    /// that should depend on the daemon being healthy enough to have decided.
     public init(
         path: String = ControlProtocol.defaultSocketPath,
+        initialConfig: ChargeConfig,
         applyConfig: @escaping (ChargeConfig) -> Void,
         reloadConfig: @escaping () -> Void
     ) {
         self.path = path
         self.applyConfig = applyConfig
         self.reloadConfig = reloadConfig
+        snapshot.setConfig(initialConfig)
     }
 
     deinit {
@@ -157,9 +165,7 @@ public final class ControlServer {
             return ControlResponse(ok: true, report: report)
 
         case .disable:
-            guard let current = snapshot.config() else {
-                return .failure("the daemon has not reached a decision yet")
-            }
+            let current = snapshot.config()
             // `.with` and not a fresh `ChargeConfig`: turning limiting off is a
             // statement about the limit and nothing else. Rebuilding the config
             // here used to reset the thermal cutoff, the sleep policy and
@@ -171,9 +177,7 @@ public final class ControlServer {
             guard let upper = request.upper else {
                 return .failure("setLimit needs an upper limit")
             }
-            guard let current = snapshot.config() else {
-                return .failure("the daemon has not reached a decision yet")
-            }
+            let current = snapshot.config()
             // Still through the same validating initialiser as every other path,
             // so the socket is not a way around the bounds.
             return change(
@@ -249,11 +253,18 @@ public enum ControlServerError: Error, CustomStringConvertible {
 private final class SnapshotBox {
     private let lock = NSLock()
     private var value: DaemonReport?
-    private var configuration: ChargeConfig?
+    /// Never absent: seeded with what the daemon loaded before the socket opened.
+    private var configuration = ChargeConfig()
 
     func set(_ report: DaemonReport, config: ChargeConfig) {
         lock.lock()
         value = report
+        configuration = config
+        lock.unlock()
+    }
+
+    func setConfig(_ config: ChargeConfig) {
+        lock.lock()
         configuration = config
         lock.unlock()
     }
@@ -264,7 +275,7 @@ private final class SnapshotBox {
         return value
     }
 
-    func config() -> ChargeConfig? {
+    func config() -> ChargeConfig {
         lock.lock()
         defer { lock.unlock() }
         return configuration
