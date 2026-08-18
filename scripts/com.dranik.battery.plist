@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.dranik.battery</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/libexec/dranikd</string>
+	</array>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<!--
+	    Restart only on a non-zero exit. Not plain KeepAlive: the daemon exits 0
+	    when it is asked to stop, and it opens the charge gate on the way out, so
+	    restarting it then would make it impossible to stop at all. A crash, a
+	    SIGKILL, or the watchdog's EX_SOFTWARE all exit non-zero and do come back
+	    — and the fresh process reconciles the gate from the SMC on startup.
+	-->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+
+	<!--
+	    Adaptive rather than Background: Background lowers scheduling priority,
+	    and this has to answer a sleep notification within the thirty seconds
+	    macOS allows before it stops waiting.
+	-->
+	<key>ProcessType</key>
+	<string>Adaptive</string>
+
+	<key>StandardErrorPath</key>
+	<string>/var/log/dranikd.log</string>
+</dict>
+</plist>
