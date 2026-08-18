@@ -9,7 +9,7 @@ APP_BUNDLE := $(BUILD_DIR)/Dranik.app
 APP_VERSION := $(shell sed -n 's/.*current = "\(.*\)".*/\1/p' Sources/DranikCore/Version.swift)
 AGENT_PLIST := $(HOME)/Library/LaunchAgents/com.dranik.battery.app.plist
 
-.PHONY: all build test run status dump probe tools clean help install uninstall daemon-dry-run logs gate-dry-run gate-experiment app app-run install-app uninstall-app
+.PHONY: all build test run status dump probe tools clean help install uninstall daemon-dry-run logs gate-dry-run gate-experiment app app-run install-app uninstall-app ui-drill
 
 all: build
 
@@ -137,3 +137,10 @@ clean:
 
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/^## //'
+
+## ui-drill: run the menu bar app against a daemon that misbehaves on purpose
+##
+## Reads nothing real and writes nothing: a temporary socket, canned reports, and
+## the app's own `--check` output read back. Needs no root and no daemon.
+ui-drill: app
+	$(BUILD_DIR)/dranik-ui-drill

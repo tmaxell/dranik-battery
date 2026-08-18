@@ -65,6 +65,15 @@ let package = Package(
             path: "tools/GateExperiment"
         ),
 
+        // Drives the app against a daemon that misbehaves on purpose. A test
+        // cannot look at a screen, but it can read back what the app made of a
+        // report, which is where the states that matter actually go wrong.
+        .executableTarget(
+            name: "dranik-ui-drill",
+            dependencies: ["DranikCore", "DranikDaemon"],
+            path: "tools/UIDrill"
+        ),
+
         // Answers the sleep/reboot persistence questions. Writes to the SMC,
         // so it too is a separate executable that must be invoked by name.
         .executableTarget(

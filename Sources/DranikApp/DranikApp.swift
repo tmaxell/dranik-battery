@@ -20,9 +20,23 @@ struct DranikApp: App {
         // the right thing" to a question with a text answer. It is also the only
         // way to check the app against a real daemon over the real socket.
         if CommandLine.arguments.contains("--check") {
-            print(AppModel.diagnose())
+            print(AppModel.diagnose(socketPath: Self.socketArgument()))
             exit(0)
         }
+    }
+
+    /// `--socket` points the app at a different daemon.
+    ///
+    /// It exists for the drill: the states worth being sure about are the ones a
+    /// healthy daemon will not produce on demand, and the only way to see them is
+    /// to talk to one that produces them deliberately.
+    private static func socketArgument() -> String {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--socket"),
+              index + 1 < arguments.count else {
+            return ControlProtocol.defaultSocketPath
+        }
+        return arguments[index + 1]
     }
 
     var body: some Scene {
