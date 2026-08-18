@@ -90,6 +90,7 @@ public final class PowerEventMonitor {
 
     private let powerSourceName: String
     private let percentChangeName: String
+    private let observesSleep: Bool
 
     /// The notification names are parameters purely so the subscription path can
     /// be tested. `com.apple.system.powersources.*` reject posts from anything
@@ -97,15 +98,22 @@ public final class PowerEventMonitor {
     /// listener at all, while an arbitrary name does — so the only way to prove
     /// this code delivers what it subscribes to is to point it somewhere a test
     /// can post to.
+    ///
+    /// `observesSleep` is off for anything that is not the daemon. Every
+    /// `canSleep` and `willSleep` has to be answered exactly once or the machine
+    /// stalls for thirty seconds before sleeping, so a client that has no reason
+    /// to care about sleep must not subscribe to it and acquire that obligation.
     public init(
         queue: DispatchQueue,
         powerSourceName: String = kIOPSNotifyPowerSource,
         percentChangeName: String = PowerEventMonitor.percentChangeNotification,
+        observesSleep: Bool = true,
         handler: @escaping (PowerEvent) -> Void
     ) {
         self.queue = queue
         self.powerSourceName = powerSourceName
         self.percentChangeName = percentChangeName
+        self.observesSleep = observesSleep
         self.handler = handler
     }
 
@@ -127,7 +135,9 @@ public final class PowerEventMonitor {
             try subscribeNotify(percentChangeName) { [weak self] in
                 self?.handler(.percentageChanged)
             }
-            try subscribeSystemPower()
+            if observesSleep {
+                try subscribeSystemPower()
+            }
         } catch {
             stop()
             throw error
