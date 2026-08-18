@@ -122,9 +122,12 @@ public final class GateActuator {
         // Captured now, not read later: whether the charger was attached at the
         // moment of the write is what decides if the check can mean anything.
         let onACAtWrite = (try? PowerReader.snapshot())?.isExternalConnected ?? false
+        // And a clock that stops with the machine, so the check can tell whether
+        // its own window was spent running or asleep.
+        let awakeAtWrite = Clocks.excludingSleep()
 
         let work = DispatchWorkItem { [weak self] in
-            self?.verify(position, onACAtWrite: onACAtWrite)
+            self?.verify(position, onACAtWrite: onACAtWrite, awakeAtWrite: awakeAtWrite)
         }
         pendingVerification = work
         queue.asyncAfter(
@@ -132,14 +135,20 @@ public final class GateActuator {
         )
     }
 
-    private func verify(_ expected: GatePosition, onACAtWrite: Bool) {
+    private func verify(_ expected: GatePosition, onACAtWrite: Bool, awakeAtWrite: TimeInterval) {
         guard let snapshot = try? PowerReader.snapshot() else { return }
+
+        // How much of the window the machine actually spent running. A window
+        // mostly spent asleep gave the hardware no chance to act, and judging it
+        // is judging nothing.
+        let awakeElapsed = Clocks.excludingSleep() - awakeAtWrite
 
         let verdict = GateVerification.judge(
             expected: expected,
             onACAtWrite: onACAtWrite,
             onACNow: snapshot.isExternalConnected,
-            inhibitedNow: snapshot.notChargingReason?.contains(.inhibited) ?? false
+            inhibitedNow: snapshot.notChargingReason?.contains(.inhibited) ?? false,
+            awakeSecondsElapsed: awakeElapsed
         )
 
         switch verdict {
@@ -197,12 +206,26 @@ public enum GateVerification: Equatable, Sendable {
     ///   - onACAtWrite: whether the charger was attached when it was written.
     ///   - onACNow: whether it still is.
     ///   - inhibitedNow: whether the charger reports the software inhibit.
+    ///   - awakeSecondsElapsed: how much of the window was spent running rather
+    ///     than asleep.
     public static func judge(
         expected: GatePosition,
         onACAtWrite: Bool,
         onACNow: Bool,
-        inhibitedNow: Bool
+        inhibitedNow: Bool,
+        awakeSecondsElapsed: TimeInterval = .greatestFiniteMagnitude
     ) -> GateVerification {
+        // The hardware needs several seconds of the machine actually running to
+        // act on a gate write. A window spent asleep gave it none of them.
+        //
+        // Two failed checks in ten hours survived widening the window from 20s
+        // to 45s, both clustered around sleeps — because the window is wall
+        // time and sleep passes through it without the charger doing anything.
+        guard awakeSecondsElapsed >= ChargeGateTiming.observedEffectLatency else {
+            return .inconclusive(String(
+                format: "only %.0fs of the window was spent awake", awakeSecondsElapsed
+            ))
+        }
         // The inhibit bit only means anything on AC. Off it the charger reports
         // `onBattery` and stops for its own reasons, which says nothing at all
         // about the gate.
