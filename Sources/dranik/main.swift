@@ -52,7 +52,7 @@ func runSMCRead(_ names: [String]) {
                 print("\(key)\tabsent")
                 continue
             }
-            let hex = reading.bytes.map { String(format: "%02x", $0) }.joined()
+            let hex = reading.bytes.hexString
             print("\(key)\t\(reading.info.type)\t\(reading.info.size)\t"
                 + String(format: "0x%02x", reading.info.attributes) + "\t"
                 + (reading.info.isWritable ? "W" : "-") + "\t"
@@ -81,7 +81,7 @@ func runSMCDump() {
             // them: for a diagnostic tool an unreadable key is a finding.
             let reading = try? smc.read(key)
             let value = reading.map { "\($0.value)" } ?? ""
-            let raw = reading.map { $0.bytes.map { String(format: "%02x", $0) }.joined() }
+            let raw = reading.map(\.bytes.hexString)
                 ?? "<unreadable>"
 
             print("\(key)\t\(info.type)\t\(info.size)\t"

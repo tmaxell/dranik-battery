@@ -66,7 +66,7 @@ public final class GateActuator {
             if dryRun {
                 log.notice("""
                 DRY RUN \(spec.key.description, privacy: .public) -> \
-                \(Self.hex(payload), privacy: .public) (\(position.rawValue, privacy: .public), \
+                \(payload.hexString, privacy: .public) (\(position.rawValue, privacy: .public), \
                 \(reason, privacy: .public))
                 """)
                 continue
@@ -75,7 +75,7 @@ public final class GateActuator {
                 try smc.write(spec.key, bytes: payload, matching: spec.expectedInfo)
                 log.notice("""
                 \(spec.key.description, privacy: .public) -> \
-                \(Self.hex(payload), privacy: .public) (\(position.rawValue, privacy: .public), \
+                \(payload.hexString, privacy: .public) (\(position.rawValue, privacy: .public), \
                 \(reason, privacy: .public))
                 """)
             } catch {
@@ -182,9 +182,6 @@ public final class GateActuator {
         forceOpen(reason: "verification failed")
     }
 
-    private static func hex(_ bytes: [UInt8]) -> String {
-        bytes.map { String(format: "%02x", $0) }.joined()
-    }
 }
 
 /// Whether a gate write can be judged to have worked, and if so what the answer
