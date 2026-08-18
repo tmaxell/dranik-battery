@@ -32,8 +32,9 @@ public extension SMCKeySpec {
     /// Apple Silicon firmware from roughly 2024 onwards. Present on
     /// MacBookPro17,1 / mBoot-18000.120.36 as `4 / ui32 / 0xD4`.
     ///
-    /// Off-payload `01 00 00 00` is what both Battery-Toolkit and batt write.
-    /// It has not yet been verified on this machine.
+    /// Off-payload `01 00 00 00` is what both Battery-Toolkit and batt write,
+    /// and it was confirmed on this machine: charging stopped, the charger
+    /// reported its inhibit bit, and restoring the key resumed it.
     static let chargeGateCHTE = SMCKeySpec(
         key: SMCKey("CHTE")!,
         expectedInfo: SMCKeyInfo(size: 4, type: "ui32", attributes: 0xD4),
@@ -61,7 +62,6 @@ public extension SMCKeySpec {
     )
 }
 
-/// Which mechanism, if any, this machine offers for gating charge.
 /// Timings the charge gate was measured to have, rather than assumed to have.
 public enum ChargeGateTiming {
     /// How long the hardware took to act on a gate write.
@@ -77,12 +77,21 @@ public enum ChargeGateTiming {
 
     /// How long to wait before concluding a gate write had no effect.
     ///
-    /// Comfortably longer than `observedEffectLatency`, because declaring the
-    /// mechanism broken and giving up on charge limiting is a far worse error
-    /// than waiting a few extra seconds.
-    public static let verificationWindow: TimeInterval = 20
+    /// Was 20s, on the strength of a single measurement showing the hardware
+    /// acting within seven. Three days of running showed that is sometimes not
+    /// enough: four checks over that period contradicted a write that had in
+    /// fact worked, in both directions. None escalated, because it takes two
+    /// consecutive contradictions to switch the feature off — but four near
+    /// misses is a margin, not a coincidence.
+    ///
+    /// The asymmetry decides the number. Waiting longer costs a slower verdict
+    /// on a mechanism that is genuinely broken; waiting too little costs turning
+    /// off a limit that works. A real failure is still caught within two
+    /// windows.
+    public static let verificationWindow: TimeInterval = 45
 }
 
+/// Which mechanism, if any, this machine offers for gating charge.
 public enum ChargeGate: Equatable, Sendable {
     /// One key controls the gate. `CHTE` on current firmware.
     case single(SMCKeySpec)

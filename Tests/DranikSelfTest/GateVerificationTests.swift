@@ -85,6 +85,47 @@ func runGateVerificationTests() {
         }
     }
 
+    test("a window spent asleep is inconclusive, however it looks") {
+        // Ten hours of running produced two failed checks even after the window
+        // was widened from 20s to 45s, both clustered around sleeps. Widening
+        // could never have fixed it: the window is wall time, and sleep passes
+        // through it while the charger does nothing at all.
+        for inhibited in [true, false] {
+            guard case .inconclusive = GateVerification.judge(
+                expected: .closed, onACAtWrite: true, onACNow: true,
+                inhibitedNow: inhibited, awakeSecondsElapsed: 2
+            ) else {
+                return expectTrue(false, "a window spent asleep proves nothing")
+            }
+        }
+    }
+
+    test("a window that was actually spent running still judges") {
+        // The fix must not have made every check inconclusive.
+        guard case .contradicted = GateVerification.judge(
+            expected: .closed, onACAtWrite: true, onACNow: true,
+            inhibitedNow: false, awakeSecondsElapsed: 45
+        ) else {
+            return expectTrue(false, "a genuine failure must still be caught")
+        }
+    }
+
+    test("the awake threshold is the measured hardware latency, not a guess") {
+        // Just under the seven seconds the hardware was measured to need.
+        guard case .inconclusive = GateVerification.judge(
+            expected: .closed, onACAtWrite: true, onACNow: true,
+            inhibitedNow: false, awakeSecondsElapsed: 6.9
+        ) else {
+            return expectTrue(false, "below the measured latency nothing can be concluded")
+        }
+        guard case .contradicted = GateVerification.judge(
+            expected: .closed, onACAtWrite: true, onACNow: true,
+            inhibitedNow: false, awakeSecondsElapsed: 7.1
+        ) else {
+            return expectTrue(false, "above it, a contradiction is real")
+        }
+    }
+
     test("only the on-AC-throughout cases are ever conclusive") {
         // Sweep the whole space and assert the rule directly, so a future edit
         // cannot widen what counts as evidence without failing here.

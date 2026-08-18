@@ -11,6 +11,7 @@ USAGE
   dranik smc <KEY>...         Read specific SMC keys, e.g. dranik smc CHTE B0AV
   dranik smc --dump           Enumerate every SMC key as TSV
   dranik watch                Print power events as they arrive
+  dranik soak [--since 24h]   Did the daemon behave over the last stretch of time?
 
 Needs a running daemon:
   dranik daemon [--json]      What the daemon is currently doing
@@ -142,6 +143,13 @@ case "smc":
 
 case "watch":
     WatchCommand.run()
+
+case "soak":
+    SoakCommand.run(since: {
+        guard let index = arguments.firstIndex(of: "--since"), index + 1 < arguments.count
+        else { return "24h" }
+        return arguments[index + 1]
+    }())
 
 case "daemon":
     ControlCommands.daemonStatus(
