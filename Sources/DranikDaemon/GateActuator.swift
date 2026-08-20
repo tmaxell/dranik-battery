@@ -24,14 +24,25 @@ public final class GateActuator {
 
     private(set) public var isTrusted = true
     private var pendingVerification: DispatchWorkItem?
-    private var consecutiveFailures = 0
+    private var failures = VerificationFailures()
     private var hasLoggedDistrust = false
+    /// When the machine last woke, on the awake clock. `nil` until it does.
+    ///
+    /// A gate write issued on either side of a wake cannot be judged: the
+    /// charger has its own recovery to do, and it takes longer than the
+    /// verification window.
+    private var lastWakeAt: TimeInterval?
 
     public init(smc: SMCConnection, specs: [SMCKeySpec], queue: DispatchQueue, dryRun: Bool) {
         self.smc = smc
         self.specs = specs
         self.queue = queue
         self.dryRun = dryRun
+    }
+
+    /// Told by the daemon on every wake. See `lastWakeAt`.
+    func noteWake() {
+        lastWakeAt = Clocks.excludingSleep()
     }
 
     /// Where the gate actually is, read from the SMC. `nil` if it cannot be read
@@ -138,35 +149,46 @@ public final class GateActuator {
     private func verify(_ expected: GatePosition, onACAtWrite: Bool, awakeAtWrite: TimeInterval) {
         guard let snapshot = try? PowerReader.snapshot() else { return }
 
+        let awakeNow = Clocks.excludingSleep()
         // How much of the window the machine actually spent running. A window
         // mostly spent asleep gave the hardware no chance to act, and judging it
         // is judging nothing.
-        let awakeElapsed = Clocks.excludingSleep() - awakeAtWrite
+        let awakeElapsed = awakeNow - awakeAtWrite
+        // And how long it had been awake when the write went out. Negative when
+        // the wake came after it, which is how the 2026-08-19 failure happened:
+        // the write landed one second before `kIOMessageSystemHasPoweredOn`.
+        let awakeBeforeWrite = lastWakeAt.map { awakeAtWrite - $0 } ?? .greatestFiniteMagnitude
 
+        let charger = snapshot.notChargingReason
         let verdict = GateVerification.judge(
             expected: expected,
             onACAtWrite: onACAtWrite,
             onACNow: snapshot.isExternalConnected,
-            inhibitedNow: snapshot.notChargingReason?.contains(.inhibited) ?? false,
-            awakeSecondsElapsed: awakeElapsed
+            inhibitedNow: charger?.contains(.inhibited) ?? false,
+            batteryFullNow: charger?.contains(.batteryFull) ?? false,
+            awakeSecondsElapsed: awakeElapsed,
+            awakeSecondsBeforeWrite: awakeBeforeWrite
         )
 
         switch verdict {
         case .confirmed:
-            consecutiveFailures = 0
+            failures.confirmed()
             log.debug("gate verified \(expected.rawValue, privacy: .public)")
         case .inconclusive(let why):
-            // Not evidence of anything. Leave the failure count alone.
+            // Not evidence of anything. Leave the run alone.
             log.debug("gate check inconclusive: \(why, privacy: .public)")
         case .contradicted(let why):
-            consecutiveFailures += 1
+            let enough = failures.contradicted(at: awakeNow)
+            // The charger's own words, not just our reading of them. Without
+            // this a post-mortem can say only "not inhibited", which leaves the
+            // difference between a broken gate and a battery that had simply
+            // finished charging unanswerable — as it was on 2026-08-19.
             log.error("""
-            gate check failed (\(self.consecutiveFailures, privacy: .public)): \
-            \(why, privacy: .public)
+            gate check failed (\(self.failures.count, privacy: .public)): \
+            \(why, privacy: .public); charger says \
+            \(charger.map(String.init(describing:)) ?? "nothing", privacy: .public)
             """)
-            // One contradicted check is not enough to switch the feature off.
-            // Two in a row, both conclusive, is.
-            if consecutiveFailures >= 2 {
+            if enough {
                 distrust(why)
             }
         }
@@ -205,13 +227,33 @@ public enum GateVerification: Equatable, Sendable {
     ///   - inhibitedNow: whether the charger reports the software inhibit.
     ///   - awakeSecondsElapsed: how much of the window was spent running rather
     ///     than asleep.
+    ///   - batteryFullNow: whether the charger reports the battery as full.
+    ///   - awakeSecondsBeforeWrite: how long the machine had been awake when the
+    ///     write went out. Negative when the wake came afterwards.
     public static func judge(
         expected: GatePosition,
         onACAtWrite: Bool,
         onACNow: Bool,
         inhibitedNow: Bool,
-        awakeSecondsElapsed: TimeInterval = .greatestFiniteMagnitude
+        batteryFullNow: Bool = false,
+        awakeSecondsElapsed: TimeInterval = .greatestFiniteMagnitude,
+        awakeSecondsBeforeWrite: TimeInterval = .greatestFiniteMagnitude
     ) -> GateVerification {
+        // A write issued next to a wake is judged against a charger that has not
+        // caught up. Measured on 2026-08-19: the gate was opened one second
+        // before the wake notification arrived, and forty-eight seconds later
+        // the charger still reported the old inhibit — which read as proof the
+        // mechanism was broken, and switched charge limiting off.
+        //
+        // The existing sleep guard below could not catch this. It asks how much
+        // of the *window* was spent awake, and the whole window was; the sleep
+        // was on the other side of the write.
+        guard awakeSecondsBeforeWrite >= Daemon.postWakeSettle else {
+            return .inconclusive(String(
+                format: "the machine woke %.0fs either side of the write",
+                abs(awakeSecondsBeforeWrite)
+            ))
+        }
         // The hardware needs several seconds of the machine actually running to
         // act on a gate write. A window spent asleep gave it none of them.
         //
@@ -240,9 +282,16 @@ public enum GateVerification: Equatable, Sendable {
 
         switch expected {
         case .closed:
-            return inhibitedNow
-                ? .confirmed
-                : .contradicted("gate set closed but the charger is not inhibited")
+            if inhibitedNow { return .confirmed }
+            // A charger that has finished charging has stopped for its own
+            // reason, and whether it also asserts the software inhibit says
+            // nothing about the gate. Reading that as a broken mechanism is the
+            // likeliest explanation of the second failure on 2026-08-19, which
+            // came moments after the charge reached the limit.
+            if batteryFullNow {
+                return .inconclusive("the charger reports the battery full")
+            }
+            return .contradicted("gate set closed but the charger is not inhibited")
         case .open:
             return inhibitedNow
                 ? .contradicted("gate set open but the charger is still inhibited")
