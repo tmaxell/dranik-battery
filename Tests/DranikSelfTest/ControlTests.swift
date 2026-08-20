@@ -7,13 +7,15 @@ import Foundation
 private func withServer(
     apply: @escaping (ChargeConfig) -> Void = { _ in },
     reload: @escaping () -> Void = {},
+    restore: @escaping () -> Void = {},
     publish: DaemonReport? = report(),
     config: ChargeConfig = ChargeConfig(),
     _ body: (String, ControlServer) throws -> Void
 ) throws {
     let path = NSTemporaryDirectory() + "dranik-\(UUID().uuidString).sock"
     let server = ControlServer(
-        path: path, initialConfig: config, applyConfig: apply, reloadConfig: reload
+        path: path, initialConfig: config, applyConfig: apply,
+        reloadConfig: reload, restoreTrust: restore
     )
     try server.start()
     defer { server.stop() }
@@ -297,6 +299,41 @@ func runControlTests() {
         let config = try expectNotNil(seen, "disable must reach the daemon regardless")
         expectTrue(config.isLimitingDisabled)
         expectEqual(config.thermalCutoff, 45, "and still not reset anything on the way")
+    }
+
+    test("retrust reaches the daemon when the gate has been disarmed") {
+        // The way back. Before this the only route was restarting the daemon,
+        // and on 2026-08-19 nobody did for two days.
+        let lock = NSLock()
+        var restored = 0
+        try withServer(
+            restore: { lock.lock(); restored += 1; lock.unlock() },
+            publish: report(trusted: false)
+        ) { path, _ in
+            let response = try ControlClient.send(ControlRequest(command: .retrust), to: path)
+            expectTrue(response.ok)
+        }
+        lock.lock()
+        let seen = restored
+        lock.unlock()
+        expectEqual(seen, 1)
+    }
+
+    test("retrust on a healthy gate says so instead of doing something") {
+        let lock = NSLock()
+        var restored = 0
+        try withServer(
+            restore: { lock.lock(); restored += 1; lock.unlock() },
+            publish: report(trusted: true)
+        ) { path, _ in
+            let response = try ControlClient.send(ControlRequest(command: .retrust), to: path)
+            expectTrue(response.ok)
+            expectFalse(response.notes.isEmpty, "it should say there was nothing to do")
+        }
+        lock.lock()
+        let seen = restored
+        lock.unlock()
+        expectEqual(seen, 0, "re-arming a gate that is armed must not disturb it")
     }
 
     // MARK: - Fields a client needs to tell states apart

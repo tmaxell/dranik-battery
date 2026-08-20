@@ -148,6 +148,13 @@ public final class Daemon {
                     self.config = loaded.config
                     self.evaluate(trigger: "config reloaded")
                 }
+            },
+            restoreTrust: { [weak self] in
+                guard let self else { return }
+                self.queue.async {
+                    guard self.actuator.restoreTrust() else { return }
+                    self.evaluate(trigger: "gate re-armed")
+                }
             }
         )
         do {

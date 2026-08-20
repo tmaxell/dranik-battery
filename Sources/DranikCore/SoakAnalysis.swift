@@ -27,6 +27,13 @@ public struct SoakAnalysis: Equatable, Sendable {
     public var restarts = 0
     public var watchdogStalls = 0
     public var verificationFailures = 0
+    /// Checks that confirmed the gate did what was asked.
+    ///
+    /// Counted so that failures can be read as a rate rather than a tally. Two
+    /// failures out of two checks is a broken mechanism; two out of fifty is
+    /// weather — and on 2026-08-19 nothing could tell the two apart, because
+    /// confirmations were logged at `debug`, which is not persisted.
+    public var verificationsConfirmed = 0
     public var distrusts = 0
     public var gateClosures = 0
     public var gateOpens = 0
@@ -49,6 +56,7 @@ public struct SoakAnalysis: Equatable, Sendable {
             if message.contains("dranikd running") { result.restarts += 1 }
             if message.contains("presumed stuck") { result.watchdogStalls += 1 }
             if message.contains("gate check failed") { result.verificationFailures += 1 }
+            if message.contains("gate verified") { result.verificationsConfirmed += 1 }
             if message.contains("charge limiting disabled") { result.distrusts += 1 }
             if message.contains("COULD NOT OPEN") || message.contains("not applied") {
                 result.writeFailures += 1
@@ -114,9 +122,9 @@ public struct SoakAnalysis: Equatable, Sendable {
             found.append(Concern(
                 severity: .worthNoting,
                 text: """
-                \(verificationFailures) verification(s) contradicted a write. It takes two \
-                in a row to disable limiting, so these did not — but a rising count means \
-                the check window is too tight
+                \(verificationFailures) of \(verificationFailures + verificationsConfirmed) \
+                verification(s) contradicted a write. It takes two close together to \
+                disable limiting — but a rising share means the check is too tight
                 """
             ))
         }

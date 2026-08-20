@@ -17,6 +17,7 @@ Needs a running daemon:
   dranik daemon [--json]      What the daemon is currently doing
   dranik limit <pct> [resume] Change the charge limit, e.g. dranik limit 80 75
   dranik off                  Stop limiting (equivalent to a limit of 100)
+  dranik retrust              Trust the charge gate again after a failure
   dranik reload               Re-read the configuration file
   dranik help
 
@@ -161,6 +162,9 @@ case "limit":
 
 case "off":
     ControlCommands.disable(socket: socketOption())
+
+case "retrust":
+    ControlCommands.retrust(socket: socketOption())
 
 case "reload":
     ControlCommands.reload(socket: socketOption())

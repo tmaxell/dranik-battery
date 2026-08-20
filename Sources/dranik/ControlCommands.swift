@@ -22,6 +22,10 @@ enum ControlCommands {
         send(ControlRequest(command: .disable), socket: socket)
     }
 
+    static func retrust(socket: String) -> Never {
+        send(ControlRequest(command: .retrust), socket: socket)
+    }
+
     static func reload(socket: String) -> Never {
         send(ControlRequest(command: .reload), socket: socket)
     }
@@ -97,7 +101,8 @@ enum ControlCommands {
             lines.append("")
             lines.append("  WARNING: the daemon has stopped trusting the charge gate.")
             lines.append("  It will not close it again. Charging is NOT being limited.")
-            lines.append("  Restart it: sudo launchctl kickstart -k system/com.dranik.battery")
+            lines.append("  Look at why first: dranik soak --since 24h")
+            lines.append("  Then re-arm it: dranik retrust")
         }
         if report.version != DranikVersion.current {
             // Installing does not restart the daemon, so this is the ordinary

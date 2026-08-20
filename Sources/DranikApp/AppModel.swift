@@ -105,6 +105,15 @@ final class AppModel: ObservableObject {
         send(ControlRequest(command: .setLimit, upper: upper))
     }
 
+    /// Arms the gate again after a failed verification disarmed it.
+    ///
+    /// A button rather than something the daemon does on a timer: the mechanism
+    /// exists because a limit that silently does nothing is worse than none, and
+    /// re-arming unattended would restore exactly that.
+    func rearm() {
+        send(ControlRequest(command: .retrust))
+    }
+
     func setLimiting(_ on: Bool) {
         send(on
             ? ControlRequest(command: .setLimit, upper: rememberedLimit)

@@ -76,6 +76,9 @@ public struct MenuBarSummary: Equatable, Sendable {
     /// or no gate to move.
     public let controlsAreEnabled: Bool
     public let isLimiting: Bool
+    /// True when the gate has been disarmed by a failed verification and a
+    /// person could arm it again. The one state with something to *do* about it.
+    public let needsRearming: Bool
     public let upperLimit: Int
     public let lowerLimit: Int
 
@@ -86,6 +89,7 @@ public struct MenuBarSummary: Equatable, Sendable {
         tone: Tone,
         controlsAreEnabled: Bool,
         isLimiting: Bool,
+        needsRearming: Bool = false,
         upperLimit: Int,
         lowerLimit: Int
     ) {
@@ -95,6 +99,7 @@ public struct MenuBarSummary: Equatable, Sendable {
         self.tone = tone
         self.controlsAreEnabled = controlsAreEnabled
         self.isLimiting = isLimiting
+        self.needsRearming = needsRearming
         self.upperLimit = upperLimit
         self.lowerLimit = lowerLimit
     }
@@ -146,7 +151,8 @@ public enum MenuBarPresentation {
             _ detail: String? = nil,
             icon: MenuBarSummary.Icon,
             tone: MenuBarSummary.Tone = .normal,
-            controls: Bool = true
+            controls: Bool = true,
+            rearm: Bool = false
         ) -> MenuBarSummary {
             MenuBarSummary(
                 headline: headline,
@@ -155,6 +161,7 @@ public enum MenuBarPresentation {
                 tone: tone,
                 controlsAreEnabled: controls,
                 isLimiting: isLimiting,
+                needsRearming: rearm,
                 upperLimit: report.upperLimit,
                 lowerLimit: report.lowerLimit
             )
@@ -166,8 +173,8 @@ public enum MenuBarPresentation {
         if !report.gateIsTrusted {
             return summary(
                 "Not limiting — the gate stopped responding",
-                "Restart the daemon to try again.",
-                icon: .warning, tone: .alarm
+                "Charging is not being held back. Check why, then arm it again.",
+                icon: .warning, tone: .alarm, rearm: true
             )
         }
 

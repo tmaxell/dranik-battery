@@ -86,7 +86,10 @@ enum SoakCommand {
             lines.append(row("Sleeps not announced", "\(analysis.unannouncedSleeps) (caught anyway)"))
         }
         lines.append(row("Watchdog firings", "\(analysis.watchdogStalls)"))
-        lines.append(row("Failed checks", "\(analysis.verificationFailures)"))
+        lines.append(row(
+            "Gate checks",
+            "\(analysis.verificationsConfirmed) passed, \(analysis.verificationFailures) failed"
+        ))
 
         lines.append("")
         if analysis.concerns.isEmpty {

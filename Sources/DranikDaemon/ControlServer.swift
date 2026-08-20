@@ -31,6 +31,8 @@ public final class ControlServer {
     /// the daemon's queue.
     private let applyConfig: (ChargeConfig) -> Void
     private let reloadConfig: () -> Void
+    /// Arms the charge gate again after a verification failure disarmed it.
+    private let restoreTrust: () -> Void
 
     /// `initialConfig` is what the daemon loaded at startup, so that a command
     /// arriving before the first decision has something to modify.
@@ -42,11 +44,13 @@ public final class ControlServer {
         path: String = ControlProtocol.defaultSocketPath,
         initialConfig: ChargeConfig,
         applyConfig: @escaping (ChargeConfig) -> Void,
-        reloadConfig: @escaping () -> Void
+        reloadConfig: @escaping () -> Void,
+        restoreTrust: @escaping () -> Void = {}
     ) {
         self.path = path
         self.applyConfig = applyConfig
         self.reloadConfig = reloadConfig
+        self.restoreTrust = restoreTrust
         snapshot.setConfig(initialConfig)
     }
 
@@ -185,6 +189,18 @@ public final class ControlServer {
                 asked: "setLimit \(upper)"
             )
 
+        case .retrust:
+            guard snapshot.get()?.gateIsTrusted == false else {
+                return ControlResponse(
+                    ok: true, report: snapshot.get(),
+                    notes: ["the gate was already trusted — nothing to do"]
+                )
+            }
+            log.notice("retrust requested")
+            let before = snapshot.get()?.decidedAt
+            restoreTrust()
+            return settled(after: before, notes: ["charge limiting re-armed"])
+
         case .reload:
             reloadConfig()
             return ControlResponse(
@@ -210,8 +226,24 @@ public final class ControlServer {
         // daemon was opening it. Bounded, and on this queue only — the daemon's
         // is never blocked, so a wedged controller costs a stale answer and
         // nothing more.
-        var report = snapshot.get()
-        var notes = config.corrections
+        var response = settled(after: before, notes: config.corrections)
+        guard response.report?.decidedAt == before || response.report == nil else {
+            return response
+        }
+
+        // No new decision in time. Say what will be in force and be explicit
+        // that the rest of the report predates the change.
+        response.report?.upperLimit = config.upperLimit
+        response.report?.lowerLimit = config.lowerLimit
+        return response
+    }
+
+    /// Waits briefly for the decision a command provokes, so the gate and reason
+    /// reported belong to the new state rather than the old one.
+    ///
+    /// Bounded, and on this queue only — the daemon's is never blocked, so a
+    /// wedged controller costs a stale answer and nothing more.
+    private func settled(after before: Date?, notes: [String]) -> ControlResponse {
         let deadline = Date().addingTimeInterval(Self.settleTimeout)
         while Date() < deadline {
             usleep(20_000)
@@ -219,14 +251,11 @@ public final class ControlServer {
                 return ControlResponse(ok: true, report: fresh, notes: notes)
             }
         }
-
-        // No new decision in time. Say what will be in force and be explicit
-        // that the rest of the report predates the change.
-        report?.upperLimit = config.upperLimit
-        report?.lowerLimit = config.lowerLimit
-        notes.append("applied, but the daemon has not re-decided yet — "
-            + "the gate and reason above predate the change")
-        return ControlResponse(ok: true, report: report, notes: notes)
+        return ControlResponse(
+            ok: true, report: snapshot.get(),
+            notes: notes + ["applied, but the daemon has not re-decided yet — "
+                + "the gate and reason above predate the change"]
+        )
     }
 
     /// `admin` is gid 80 on macOS. Looked up rather than hardcoded, falling back
