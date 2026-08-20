@@ -70,8 +70,9 @@ enum PopoverSnapshots {
             name: "untrusted-gate",
             summary: summary(
                 headline: "Not limiting — the gate stopped responding",
-                detail: "Restart the daemon to try again.",
-                icon: .warning, tone: .alarm, limiting: true, upper: 80, lower: 75
+                detail: "Charging is not being held back. Check why, then arm it again.",
+                icon: .warning, tone: .alarm, limiting: true, upper: 80, lower: 75,
+                rearm: true
             ),
             percentage: 88, draftLimit: 80
         ),
@@ -144,11 +145,12 @@ enum PopoverSnapshots {
         limiting: Bool,
         upper: Int,
         lower: Int,
-        controls: Bool = true
+        controls: Bool = true,
+        rearm: Bool = false
     ) -> MenuBarSummary {
         MenuBarSummary(
             headline: headline, detail: detail, icon: icon, tone: tone,
-            controlsAreEnabled: controls, isLimiting: limiting,
+            controlsAreEnabled: controls, isLimiting: limiting, needsRearming: rearm,
             upperLimit: upper, lowerLimit: lower
         )
     }

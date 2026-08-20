@@ -51,6 +51,13 @@ struct PopoverView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            // The only state in the popover with something to do about it.
+            if model.summary.needsRearming {
+                Button("Arm charge limiting again") { model.rearm() }
+                    .controlSize(.small)
+                    .padding(.top, 2)
+            }
+
             ChargeBar(
                 percentage: model.percentage,
                 limit: model.summary.isLimiting ? model.summary.upperLimit : nil,

@@ -13,6 +13,8 @@ public struct ControlRequest: Codable, Equatable, Sendable {
         case disable
         /// Re-read the configuration file without restarting.
         case reload
+        /// Trust the charge gate again after a verification failure disarmed it.
+        case retrust
     }
 
     public var command: Command

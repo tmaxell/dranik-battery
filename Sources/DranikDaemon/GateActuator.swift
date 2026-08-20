@@ -40,6 +40,22 @@ public final class GateActuator {
         self.dryRun = dryRun
     }
 
+    /// Arms the gate again after someone has looked at why it was disarmed.
+    ///
+    /// Deliberately a request and never automatic. The mechanism exists because
+    /// a limit that silently does nothing is worse than no limit; re-arming on a
+    /// timer would restore exactly that, only on a schedule. Returns false when
+    /// there was nothing to restore.
+    @discardableResult
+    func restoreTrust() -> Bool {
+        guard !isTrusted else { return false }
+        isTrusted = true
+        hasLoggedDistrust = false
+        failures = VerificationFailures()
+        log.notice("charge limiting re-armed on request")
+        return true
+    }
+
     /// Told by the daemon on every wake. See `lastWakeAt`.
     func noteWake() {
         lastWakeAt = Clocks.excludingSleep()
@@ -173,7 +189,11 @@ public final class GateActuator {
         switch verdict {
         case .confirmed:
             failures.confirmed()
-            log.debug("gate verified \(expected.rawValue, privacy: .public)")
+            // `notice`, not `debug`: debug records are not persisted, so a
+            // post-mortem could see the failures but not how many checks passed
+            // — the difference between two failures out of two and two out of
+            // fifty. `dranik soak` reports the ratio now.
+            log.notice("gate verified \(expected.rawValue, privacy: .public)")
         case .inconclusive(let why):
             // Not evidence of anything. Leave the run alone.
             log.debug("gate check inconclusive: \(why, privacy: .public)")

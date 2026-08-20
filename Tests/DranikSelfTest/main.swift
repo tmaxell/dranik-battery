@@ -19,6 +19,7 @@ runGateVerificationTests()
 runGateTrustTests()
 runGateApplicationTests()
 runSoakAnalysisTests()
+runSoakRatioTests()
 runControlTests()
 runMenuBarPresentationTests()
 
