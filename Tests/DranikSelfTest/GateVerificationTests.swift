@@ -150,3 +150,101 @@ func runGateVerificationTests() {
         }
     }
 }
+
+/// The second time this mechanism switched itself off, on 2026-08-19, and
+/// stayed off for two days with the battery sitting at 100 %.
+///
+/// Two contradicted checks eighteen minutes apart did it. Neither was evidence
+/// of a broken gate: the first was judged across a wake that arrived one second
+/// after the write, and the second came moments after the charge reached the
+/// limit, when the charger had stopped of its own accord.
+func runGateTrustTests() {
+    test("a write judged across a wake is inconclusive, not a contradiction") {
+        // The wake landed after the write, so the time awake before it is
+        // negative. The old sleep guard could not see this: the whole window
+        // was spent awake, because the sleep was on the other side of the write.
+        guard case .inconclusive = GateVerification.judge(
+            expected: .open, onACAtWrite: true, onACNow: true, inhibitedNow: true,
+            awakeSecondsElapsed: 48, awakeSecondsBeforeWrite: -1
+        ) else {
+            return expectTrue(false, "a wake beside the write must not be judged")
+        }
+    }
+
+    test("a write moments after a wake is inconclusive too") {
+        guard case .inconclusive = GateVerification.judge(
+            expected: .closed, onACAtWrite: true, onACNow: true, inhibitedNow: false,
+            awakeSecondsElapsed: 48, awakeSecondsBeforeWrite: 5
+        ) else {
+            return expectTrue(false, "the charger has its own recovery to do")
+        }
+    }
+
+    test("a settled machine is still judged normally") {
+        expectEqual(
+            GateVerification.judge(
+                expected: .closed, onACAtWrite: true, onACNow: true, inhibitedNow: true,
+                awakeSecondsElapsed: 48, awakeSecondsBeforeWrite: 600
+            ),
+            .confirmed
+        )
+    }
+
+    test("a full battery explains a missing inhibit, so the check cannot judge") {
+        guard case .inconclusive = GateVerification.judge(
+            expected: .closed, onACAtWrite: true, onACNow: true,
+            inhibitedNow: false, batteryFullNow: true
+        ) else {
+            return expectTrue(false, "a charger that stopped on its own proves nothing")
+        }
+    }
+
+    test("a full battery does not excuse a gate that should be open") {
+        // Asked to open, still inhibited: fullness is no explanation for that,
+        // and loosening it here would be loosening it everywhere.
+        guard case .contradicted = GateVerification.judge(
+            expected: .open, onACAtWrite: true, onACNow: true,
+            inhibitedNow: true, batteryFullNow: true
+        ) else {
+            return expectTrue(false, "an open gate still holding the inhibit is wrong")
+        }
+    }
+
+    // MARK: - How long a run of failures stays a run
+
+    test("two contradictions close together still disable the gate") {
+        var failures = VerificationFailures()
+        expectFalse(failures.contradicted(at: 1_000), "one is never enough")
+        expectTrue(failures.contradicted(at: 1_060), "two a minute apart is the case this is for")
+    }
+
+    test("two contradictions far apart are two accidents, not a broken gate") {
+        // The 2026-08-19 sequence: eighteen minutes is inside the window, but a
+        // pair of unrelated hiccups hours or days apart must not add up. Checks
+        // happen only when the gate moves — about five times in two days — so
+        // without this an unbounded counter means "twice, ever".
+        var failures = VerificationFailures()
+        expectFalse(failures.contradicted(at: 1_000))
+        expectFalse(
+            failures.contradicted(at: 1_000 + VerificationFailures.sameFaultWindow + 1),
+            "a failure this far from the last one starts a new run"
+        )
+        expectEqual(failures.count, 1)
+    }
+
+    test("a confirmation clears the run") {
+        var failures = VerificationFailures()
+        expectFalse(failures.contradicted(at: 1_000))
+        failures.confirmed()
+        expectFalse(failures.contradicted(at: 1_010), "the previous run is over")
+        expectEqual(failures.count, 1)
+    }
+
+    test("a new run can still reach the threshold") {
+        var failures = VerificationFailures()
+        expectFalse(failures.contradicted(at: 1_000))
+        let later = 1_000 + VerificationFailures.sameFaultWindow + 1
+        expectFalse(failures.contradicted(at: later))
+        expectTrue(failures.contradicted(at: later + 10), "a real fault still gets caught")
+    }
+}

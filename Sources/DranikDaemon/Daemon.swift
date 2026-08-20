@@ -312,6 +312,9 @@ public final class Daemon {
 
     private func handleDidWake() {
         log.notice("woke — settling for \(Int(Self.postWakeSettle), privacy: .public)s")
+        // Before anything else: a gate write on either side of this cannot be
+        // judged, and the check for the last one may still be pending.
+        actuator.noteWake()
         _ = sleepDetector.sample()
         windows.clearOpeningSuppression()
         windows.suppressClosing(until: Date().addingTimeInterval(Self.postWakeSettle))
