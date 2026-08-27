@@ -110,3 +110,25 @@ func runSoakAnalysisTests() {
         expectTrue(analysis.concerns.isEmpty)
     }
 }
+
+/// Failures are only meaningful against the checks that passed.
+func runSoakRatioTests() {
+    test("passed checks are counted, not just failed ones") {
+        let records = [
+            DaemonLogRecord(timestamp: Date(), category: "Gate", message: "gate verified closed"),
+            DaemonLogRecord(timestamp: Date(), category: "Gate", message: "gate verified open"),
+            DaemonLogRecord(
+                timestamp: Date(), category: "Gate",
+                message: "gate check failed (1): gate set closed but the charger is not inhibited"
+            ),
+        ]
+        let analysis = SoakAnalysis.analyse(records)
+        expectEqual(analysis.verificationsConfirmed, 2)
+        expectEqual(analysis.verificationFailures, 1)
+        // The point of counting both: this reads as weather, not a broken gate.
+        expectTrue(
+            analysis.concerns.allSatisfy { $0.severity != .serious },
+            "one failure among three checks is not serious"
+        )
+    }
+}

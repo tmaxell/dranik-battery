@@ -1,7 +1,8 @@
 # dranik-battery
 
-Открытая, легковесная альтернатива [AlDente](https://apphousekitchen.com/) для MacBook на Apple Silicon.
-Держит заряд батареи ниже заданного порога, чтобы она не жила месяцами на 100 %.
+Keeps a Mac laptop's battery below a chosen charge level, so it does not spend
+months sitting at 100 %. A root daemon, a command-line client and a menu bar app,
+with no dependencies beyond the system frameworks.
 
 ```
 $ dranik daemon
@@ -13,163 +14,239 @@ $ dranik daemon
   Thermal cutoff  40 °C
 ```
 
-## Статус
+## Status
 
-Работает. Установлен и проверен на целевой машине: затвор закрывается, ток падает в ноль,
-железо подтверждает запрет собственным флагом.
+Working and in daily use. The gate closes, current falls to zero, and the
+hardware confirms the inhibit with its own flag rather than the software taking
+its own word for it.
 
-Проверено на многосуточном прогоне: сон, пробуждение, удержание лимита, восстановление
-после перезагрузки. Прогон нашёл два бага, оба исправлены — см. `dranik soak`.
+Two multi-day soak runs have each found real defects — a watchdog that reopened
+the gate after every sleep, and a pair of unrelated verification hiccups that
+disabled charge limiting for two days. Both are fixed, and both are now regression
+tests. See `dranik soak`.
 
-## Требования
+## Requirements
 
 | | |
 |---|---|
-| Железо | MacBook на Apple Silicon. Intel не поддерживается и не планируется |
+| Hardware | Apple Silicon Mac. Intel is not supported and is not planned |
 | macOS | 14.0+ |
-| Сборка | Swift 6 из Command Line Tools или Xcode. `swift-tools-version: 5.10`, собирается обоими |
+| Build | Swift 6 from Command Line Tools, or Xcode. `swift-tools-version: 5.10` builds under either |
 
-Проверялось на MacBook Pro 13″ M1 (`MacBookPro17,1`), macOS 14.8.7.
+Xcode is not required for anything, including the menu bar app: SwiftUI ships in
+the Command Line Tools SDK, and the app bundle is assembled from an `Info.plist`
+and one binary.
 
-## Установка
+## Install
 
 ```bash
 make install
 ```
 
-Без `sudo` — цель сама поднимает права только для скрипта установки. Скрипт откажется
-работать, если на машине не найден распознанный ключ управления зарядкой.
+Not under `sudo` — the target elevates only the install script. The script
+refuses to install on a machine where it cannot find a charge-control key it
+recognises.
 
-По умолчанию ставится лимит 80 % с возобновлением на 75 %.
+The default is a limit of 80 % resuming at 75 %.
 
 ```bash
 make uninstall
 ```
 
-Останавливает демон, ждёт, пока железо отреагирует, **проверяет, что затвор открыт**,
-и отказывается что-либо удалять, если это не так.
+Stops the daemon, waits for the hardware to react, **verifies the gate is open**,
+and refuses to remove anything if it is not.
 
-## Пользование
+## Use
 
 ```bash
-dranik daemon              # что делает демон прямо сейчас
-dranik limit 75            # сменить лимит на лету, без перезапуска
-dranik limit 80 70         # лимит и точка возобновления
-dranik off                 # перестать управлять зарядкой
-dranik status              # состояние батареи; демон для этого не нужен
-dranik soak --since 24h    # вёл ли себя демон правильно за последние сутки
-make logs                  # следить за решениями
+dranik daemon              # what the daemon is doing right now
+dranik limit 75            # change the limit without restarting anything
+dranik limit 80 70         # limit and resume point
+dranik off                 # stop managing charging
+dranik retrust             # trust the gate again after a failed verification
+dranik status              # battery state; needs no daemon
+dranik soak --since 24h    # did the daemon behave over the last day
+make logs                  # follow its decisions
 ```
 
-Настройки живут в `/Library/Application Support/dranik/config.json`; после правки
-`dranik reload`.
+Settings live in `/Library/Application Support/dranik/config.json`; after editing
+it, run `dranik reload`.
 
-| Ключ | Значение |
+| Key | Meaning |
 |---|---|
-| `upperLimit` | 50–100. Ровно 100 означает «не управлять зарядкой вообще» |
-| `lowerLimit` | Заряд, при котором зарядка возобновляется. Коридор не даёт затвору дребезжать |
-| `thermalCutoff` | °C, выше которых зарядка приостанавливается |
-| `sleepPolicy` | `holdLimit`, `allowCharge` или `chargeIfLow` — см. ниже |
-| `preventIdleSleepWhileCharging` | Не давать засыпать, пока идёт зарядка до лимита. По умолчанию выключено |
+| `upperLimit` | 50–100. Exactly 100 means "do not manage charging at all" |
+| `lowerLimit` | The level at which charging resumes. The band is what stops the gate flapping |
+| `thermalCutoff` | °C above which charging is held off |
+| `sleepPolicy` | `holdLimit`, `allowCharge` or `chargeIfLow` — see below |
+| `preventIdleSleepWhileCharging` | Hold off idle sleep while charging towards the limit. Off by default |
 
-### Что происходит во сне
+### The menu bar app
 
-Демон во сне не исполняется, а состояние затвора сон переживает — это **измерено**
-на этом железе. Значит то, что демон оставил перед сном, машина и делает всю ночь,
-и бесплатного варианта нет:
+```bash
+make install-app     # into /Applications, started at login
+make app-run         # just run the build from .build, installing nothing
+make uninstall-app   # remove the app; the daemon is left alone
+```
 
-| `sleepPolicy` | Ночью | Цена |
+One status item and one popover: the charge with the limit marked on it, one
+sentence saying why the machine is or is not charging, a slider and a switch.
+Everything else stays in the CLI on purpose.
+
+The app needs no root, no Developer ID and no Xcode. The daemon already opened
+its socket to the `admin` group, so the app talks to it as an ordinary user
+process. All of the logic stays in the daemon — the app only displays and asks.
+
+```bash
+DranikApp --check    # what the app can see right now, as text
+```
+
+### What happens during sleep
+
+The daemon does not run while the machine sleeps, and the gate's position
+survives sleep — both measured. So whatever the daemon leaves behind is what the
+machine does all night, and there is no option that costs nothing:
+
+| `sleepPolicy` | Overnight | The cost |
 |---|---|---|
-| `holdLimit` (по умолчанию) | Затвор закрыт | Ноутбук на зарядке с закрытой крышкой **не зарядится** |
-| `allowCharge` | Затвор открыт | Зарядится до 100 %, лимит ночью не действует |
-| `chargeIfLow` | Закрыт, если заряд выше точки возобновления | Разряженный зарядится, возможно выше лимита |
+| `holdLimit` (default) | Gate closed | A lidded laptop on a charger **will not charge** |
+| `allowCharge` | Gate open | Charges to 100 %; the limit does not apply overnight |
+| `chargeIfLow` | Closed unless already below the resume point | A flat battery charges, possibly past the limit |
 
-По умолчанию `holdLimit`: умолчание должно делать ровно то, что обещает лимит.
+`holdLimit` is the default because a default should do exactly what the limit
+promises.
 
-**Важная оговорка, установленная измерением.** macOS присылает уведомление о засыпании
-далеко не всегда: за 10 часов работы — 8 объявленных засыпаний против 31 незаявленного,
-медианой по 15 минут. Демон узнаёт о таком сне только постфактум, при пробуждении.
+**One caveat, established by measurement.** macOS very often does not announce
+that it is going to sleep: over ten hours of use, 8 announced sleeps against 31
+unannounced ones, median fifteen minutes each. The daemon learns about that kind
+of sleep only afterwards, on waking.
 
-Практически это значит: `holdLimit` закрывает затвор **когда успевает**. Если машина
-засыпает незаявленно, пока батарея заряжается в коридоре, она может уйти выше лимита —
-ограниченно длительностью сна. Если затвор к моменту сна уже закрыт (заряд достиг верхней
-границы), всё в порядке: состояние сон переживает.
+In practice `holdLimit` closes the gate **when it gets the chance**. If the
+machine sleeps unannounced while the battery is charging inside the band, it can
+end up above the limit — bounded by how long it slept. If the gate was already
+closed when sleep began, nothing is lost: that state survives.
 
-Кого это задевает — включите `preventIdleSleepWhileCharging`: тогда машина не уснёт
-по бездействию, пока идёт зарядка до лимита. Закрытие крышки это всё равно не остановит.
+If this matters to you, turn on `preventIdleSleepWhileCharging`: the machine will
+not fall asleep through idleness while charging towards the limit. Closing the
+lid will still put it to sleep.
 
-### Проверка временем
+### Checking it over time
 
-`dranik daemon` отвечает «что сейчас». Но ограничитель — это то, что должно работать
-**дальше**, и часть отказов видна только на отрезке. Сторож, открывавший затвор после
-каждого сна, не был заметен ни в один отдельный момент — он нашёлся при чтении логов
-за трое суток разом.
+`dranik daemon` answers "what now". But a charge limiter is a thing that has to
+keep working, and some of its failures are visible only across an interval. A
+watchdog that reopened the gate after every sleep was invisible at any single
+moment; it turned up while reading three days of logs at once.
 
 ```bash
 dranik soak --since 3d
 ```
 
-Разбирает собственные записи демона и выносит вердикт: сколько раз двигался затвор,
-сколько было перезапусков, срабатывал ли сторож, не терял ли демон доверие к затвору.
-Ненулевой код возврата, если найдено серьёзное.
+It reads the daemon's own records and gives a verdict: how often the gate moved,
+how many restarts there were, whether the watchdog fired, how many verification
+checks passed against how many failed, and whether the daemon stopped trusting
+the gate. Non-zero exit if it finds something serious.
 
-## Безопасность
+Note that the window is bounded by what the system log still holds, which is
+usually shorter than a week. The report prints the span it actually covered.
 
-Единственный настоящий риск — оставить затвор закрытым и уйти. Против этого:
+## Safety
 
-- Ниже 20 % затвор открывается **безусловно**, независимо от лимита, температуры и всего прочего.
-- Показание старше 90 секунд считается отсутствующим — затвор открывается.
-- `SIGTERM` открывает затвор перед выходом.
-- Сторож на отдельном подключении к SMC ловит зависший контроллер, открывает затвор и выходит с ненулевым кодом, чтобы launchd перезапустил.
-- Демон перечитывает фактическое положение затвора **перед каждым решением**, а не полагается на память.
-- После записи проверяется, что железо действительно отреагировало — по собственному флагу зарядника, а не по обратному чтению ключа.
-- **Перезагрузка гарантированно сбрасывает затвор** — измерено. Худший случай ограничен одним рестартом.
+The only real risk is leaving the gate shut and walking away. Against that:
 
-Если что-то пошло не так:
+- Below 20 % the gate opens **unconditionally**, whatever the limit, the
+  temperature, or anything else says.
+- A reading older than 90 seconds counts as no reading at all — the gate opens.
+- `SIGTERM` opens the gate before exiting.
+- A watchdog on a separate SMC connection catches a wedged controller, opens the
+  gate, and exits non-zero so launchd restarts it.
+- If verification contradicts a write twice in a row and close together, charge
+  limiting is switched off and said loudly: `fault` in the log, in
+  `dranik daemon`, and in the popover. Coming back is `dranik retrust` — a
+  deliberate act, never a timer, because a limit that silently does nothing is
+  worse than no limit.
+- The daemon re-reads the gate's actual position **before every decision** rather
+  than trusting its own memory.
+- After a write it checks that the hardware really reacted, using the charger's
+  own flag rather than reading the key back.
+- **A reboot always clears the gate** — measured. The worst case is bounded by
+  one restart.
+
+If something goes wrong:
 
 ```bash
-dranik off              # перестать ограничивать
-sudo make uninstall     # снять полностью
-sudo reboot             # сбрасывает SMC в любом случае
+dranik off              # stop limiting
+sudo make uninstall     # remove it entirely
+sudo reboot             # clears the SMC regardless
 ```
 
-## Как это устроено
+## How it works
 
-На Apple Silicon зарядкой управляет SMC. Аппаратного лимита (`CHWA`) на этой машине **нет**,
-поэтому порог держит процесс: демон закрывает и открывает программный затвор `CHTE`
-по мере того, как заряд пересекает границы коридора.
+On Apple Silicon, charging is controlled by the SMC. Some firmware exposes a
+hardware limit key (`CHWA`); this project does not rely on one, because it is
+absent on plenty of machines — `dranik status` reports whether yours has it. The
+threshold is held by the daemon instead: it closes and opens the software charge
+gate (`CHTE`, or `CH0B`/`CH0C` on older firmware) as the charge crosses the edges
+of the band. Which keys exist is decided by probing at runtime, with the whole
+`KeyInfoData` validated against a known-good reference — never by assuming a chip
+generation.
 
 ```
 Sources/
-  CDranikSMC/       Раскладка SMCParamStruct на C — её гарантирует компилятор
-  CDranikPower/     Константы сообщений питания, выведенные препроцессором из заголовков Apple
-  DranikSMC/        Доступ к AppleSMC: зондирование, чтение, охраняемая запись
-  DranikPower/      Публичный IOKit: батарея, события питания без цикла опроса
-  DranikCore/       Решения. Ни IOKit, ни часов, ни файловой системы — потому и тестируется целиком
-  DranikDaemon/     Демон: контроллер, актуатор, сторож, управляющий сокет
+  CDranikSMC/       SMCParamStruct layout in C — the compiler guarantees it
+  CDranikPower/     Power message constants, derived from Apple's headers by the preprocessor
+  DranikSMC/        AppleSMC access: probing, reading, guarded writes
+  DranikPower/      Public IOKit: battery snapshots, power events with no polling loop
+  DranikCore/       Decisions. No IOKit, no clock, no filesystem — which is why it is testable whole
+  DranikDaemon/     The daemon: controller, actuator, watchdog, control socket
+  DranikApp/        The menu bar app. Decides nothing; displays only
   dranik/           CLI
-  dranikd/          Точка входа демона
-tools/              Инструменты измерений, которыми получены факты выше
+  dranikd/          Daemon entry point
+tools/              The measurement tools the facts above came from
 ```
 
-Ключевые решения и то, чем они подтверждены, — в `docs/`.
+The daemon is event-driven: `notify(3)` for charge and power-source changes,
+`IORegisterForSystemPower` for sleep and wake, and a long-interval safety net
+rather than a polling loop. Idle cost, measured over a week of uptime: about 1.6
+seconds of CPU per day for the daemon and 4.7 for the app.
 
-## Разработка
+## Development
 
 ```bash
 make build
-make test              # 186 тестов, 616 утверждений
-make daemon-dry-run    # весь цикл решений, ничего не записывая
+make test              # 224 tests, 703 assertions
+make ui-drill          # the app against a daemon that misbehaves on purpose
+make ui-snapshots      # render every popover state to PNG, light and dark
+make daemon-dry-run    # the whole decision cycle, writing nothing
 ```
 
-Тесты — обычный исполняемый файл, а не `swift test`: XCTest живёт в Xcode, и если
-`xcode-select` указывает на Command Line Tools, импортировать его нельзя. Утверждения
-названы как в XCTest, чтобы переход был механическим.
+`make ui-drill` starts a real control server on a temporary socket and feeds the
+app reports a healthy daemon will not produce — a gate it no longer trusts,
+hardware with no gate at all, a stale reading, a socket it cannot open — then
+reads back what the app made of each. A test cannot look at a screen; it can look
+at text.
 
-Ни один тест не изменяет состояние SMC. Те, что пытаются писать, проверяют, что охрана
-отказывает **до** обращения к ядру.
+`make ui-snapshots` renders the popover into an off-screen window and saves each
+state as an image, including the switch and the slider, which SwiftUI's own
+`ImageRenderer` replaces with placeholders. It is the only way to look at "the
+gate stopped responding" without waiting for it to actually happen.
 
-## Лицензия
+The test suite is an ordinary executable rather than `swift test`: XCTest lives
+in Xcode, and it cannot be imported when `xcode-select` points at the Command
+Line Tools. The assertions are named after XCTest's so that moving over would be
+mechanical.
 
-[MIT](LICENSE). Кода из AlDente, BatFi, Battery-Toolkit или batt не заимствовано —
-только приёмы и наблюдения, разобранные в `docs/06-upstream-code-review.md`.
+No test changes SMC state. The ones that try to write assert that the guards
+refuse **before** anything reaches the kernel.
+
+## Prior art
+
+Several projects solve the same problem, and reading them was worth more than
+copying them would have been: [AlDente](https://github.com/AppHouseKitchen/AlDente-Charge-Limiter),
+[Battery Toolkit](https://github.com/mhaeuser/Battery-Toolkit),
+[BatFi](https://github.com/rurza/BatFi) and [batt](https://github.com/charlie0129/batt).
+The techniques taken from them — probing keys instead of assuming them,
+validating a key's full descriptor before writing, and the handling of sleep and
+wake — are noted in the source where they are used.
+
+## Licence
+
+[MIT](LICENSE). No code was taken from any of the projects above.

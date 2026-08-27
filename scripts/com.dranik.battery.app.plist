@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.dranik.battery.app</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Applications/Dranik.app/Contents/MacOS/Dranik</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<!-- A LaunchAgent rather than SMAppService: the same mechanism that already
+	     starts the daemon, needing no signature and removable by hand. Not
+	     KeepAlive — quitting from the menu must mean quitting. -->
+	<key>ProcessType</key>
+	<string>Interactive</string>
+</dict>
+</plist>

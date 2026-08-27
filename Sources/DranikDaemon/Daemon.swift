@@ -40,6 +40,7 @@ public final class Daemon {
     private var signalSources: [DispatchSourceSignal] = []
     private var sleepDetector = SleepDetector()
     private var lastReason = "starting up"
+    private var lastReasonCode = "unknown"
 
     private var windows = SuppressionWindows()
     private var isShuttingDown = false
@@ -128,6 +129,7 @@ public final class Daemon {
     private func startControlServer() {
         let server = ControlServer(
             path: socketPath,
+            initialConfig: config,
             applyConfig: { [weak self] newConfig in
                 guard let self else { return }
                 self.queue.async {
@@ -146,6 +148,13 @@ public final class Daemon {
                     self.config = loaded.config
                     self.evaluate(trigger: "config reloaded")
                 }
+            },
+            restoreTrust: { [weak self] in
+                guard let self else { return }
+                self.queue.async {
+                    guard self.actuator.restoreTrust() else { return }
+                    self.evaluate(trigger: "gate re-armed")
+                }
             }
         )
         do {
@@ -163,17 +172,23 @@ public final class Daemon {
 
     private func publishReport() {
         let chargerReason = (try? PowerReader.snapshot())?.notChargingReason
-        control?.publish(DaemonReport(
-            upperLimit: config.upperLimit,
-            lowerLimit: config.lowerLimit,
-            thermalCutoff: config.thermalCutoff,
-            sleepPolicy: config.sleepPolicy.rawValue,
-            gate: controllerState.gate?.rawValue ?? "unknown",
-            reason: lastReason,
-            gateIsTrusted: actuator.isTrusted,
-            chargerReason: chargerReason.map(String.init(describing:)),
-            decidedAt: Date()
-        ))
+        control?.publish(
+            DaemonReport(
+                upperLimit: config.upperLimit,
+                lowerLimit: config.lowerLimit,
+                thermalCutoff: config.thermalCutoff,
+                sleepPolicy: config.sleepPolicy.rawValue,
+                gate: controllerState.gate?.rawValue ?? "unknown",
+                reason: lastReason,
+                gateIsTrusted: actuator.isTrusted,
+                chargerReason: chargerReason.map(String.init(describing:)),
+                reasonCode: lastReasonCode,
+                limitingIsSupported: capabilities.chargeGate.isSupported,
+                preventIdleSleepWhileCharging: config.preventIdleSleepWhileCharging,
+                decidedAt: Date()
+            ),
+            config: config
+        )
     }
 
     private func shutDown(reason: String, code: Int32) -> Never {
@@ -304,6 +319,9 @@ public final class Daemon {
 
     private func handleDidWake() {
         log.notice("woke — settling for \(Int(Self.postWakeSettle), privacy: .public)s")
+        // Before anything else: a gate write on either side of this cannot be
+        // judged, and the check for the last one may still be pending.
+        actuator.noteWake()
         _ = sleepDetector.sample()
         windows.clearOpeningSuppression()
         windows.suppressClosing(until: Date().addingTimeInterval(Self.postWakeSettle))
@@ -386,6 +404,7 @@ public final class Daemon {
         """
         log.debug("\(summary, privacy: .public)")
         lastReason = String(describing: decision.reason)
+        lastReasonCode = decision.reason.code
         // Unified logging drops debug records unless something is streaming, so
         // a dry run — whose whole purpose is to be watched — says it out loud.
         if dryRun {

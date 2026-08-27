@@ -14,6 +14,7 @@ let package = Package(
     products: [
         .executable(name: "dranik", targets: ["dranik"]),
         .executable(name: "dranikd", targets: ["dranikd"]),
+        .executable(name: "DranikApp", targets: ["DranikApp"]),
         .library(name: "DranikSMC", targets: ["DranikSMC"]),
         .library(name: "DranikPower", targets: ["DranikPower"]),
         .library(name: "DranikCore", targets: ["DranikCore"]),
@@ -43,12 +44,34 @@ let package = Package(
         ),
         .executableTarget(name: "dranikd", dependencies: ["DranikDaemon"]),
 
+        // The menu bar app. Named so the built product cannot collide with the
+        // `dranik` CLI on a case-insensitive filesystem, which is the default
+        // here; `make app` renames the binary on its way into the bundle.
+        //
+        // It depends on `DranikCore` and `DranikPower` and on nothing that
+        // writes: the app reads the battery itself and asks the daemon for
+        // everything else, exactly like the CLI.
+        .executableTarget(
+            name: "DranikApp",
+            dependencies: ["DranikCore", "DranikPower"],
+            path: "Sources/DranikApp"
+        ),
+
         // Writes to the SMC. Kept out of the `dranik` CLI so it cannot be
         // reached by accident: it must be invoked by name, as root.
         .executableTarget(
             name: "dranik-gate-experiment",
             dependencies: ["DranikSMC", "DranikPower"],
             path: "tools/GateExperiment"
+        ),
+
+        // Drives the app against a daemon that misbehaves on purpose. A test
+        // cannot look at a screen, but it can read back what the app made of a
+        // report, which is where the states that matter actually go wrong.
+        .executableTarget(
+            name: "dranik-ui-drill",
+            dependencies: ["DranikCore", "DranikDaemon"],
+            path: "tools/UIDrill"
         ),
 
         // Answers the sleep/reboot persistence questions. Writes to the SMC,

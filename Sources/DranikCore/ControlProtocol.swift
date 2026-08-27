@@ -13,6 +13,8 @@ public struct ControlRequest: Codable, Equatable, Sendable {
         case disable
         /// Re-read the configuration file without restarting.
         case reload
+        /// Trust the charge gate again after a verification failure disarmed it.
+        case retrust
     }
 
     public var command: Command
@@ -46,6 +48,22 @@ public struct DaemonReport: Codable, Equatable, Sendable {
     /// anywhere unprivileged. Reading the effect is possible where reading the
     /// preference is not.
     public var chargerReason: String?
+    /// Whether this machine has a charge gate the daemon recognises at all.
+    ///
+    /// Without one the daemon still runs, still answers, and enforces nothing —
+    /// a state otherwise indistinguishable from "the gate is open because it
+    /// ought to be", which is the one reading a client must not offer.
+    public var limitingIsSupported: Bool
+    /// Reported so that a client changing the limit can put it back, and so that
+    /// a laptop refusing to sleep has a visible reason.
+    public var preventIdleSleepWhileCharging: Bool
+    /// `ChargeReason.code` for the decision `reason` describes in prose.
+    ///
+    /// A client showing an icon or a warning branches on this; matching on the
+    /// prose would break the first time a sentence is improved.
+    public var reasonCode: String
+    /// The daemon's own version. See `DranikVersion` for why a client cares.
+    public var version: String
     public var decidedAt: Date
 
     public init(
@@ -57,6 +75,10 @@ public struct DaemonReport: Codable, Equatable, Sendable {
         reason: String,
         gateIsTrusted: Bool,
         chargerReason: String? = nil,
+        reasonCode: String = "unknown",
+        limitingIsSupported: Bool = true,
+        preventIdleSleepWhileCharging: Bool = false,
+        version: String = DranikVersion.current,
         decidedAt: Date
     ) {
         self.upperLimit = upperLimit
@@ -67,7 +89,49 @@ public struct DaemonReport: Codable, Equatable, Sendable {
         self.reason = reason
         self.gateIsTrusted = gateIsTrusted
         self.chargerReason = chargerReason
+        self.reasonCode = reasonCode
+        self.limitingIsSupported = limitingIsSupported
+        self.preventIdleSleepWhileCharging = preventIdleSleepWhileCharging
+        self.version = version
         self.decidedAt = decidedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case upperLimit, lowerLimit, thermalCutoff, sleepPolicy, gate, reason
+        case gateIsTrusted, chargerReason, reasonCode, limitingIsSupported
+        case preventIdleSleepWhileCharging, version, decidedAt
+    }
+
+    /// Decoded by hand so that fields added later arrive as their defaults rather
+    /// than as a parse failure.
+    ///
+    /// Not a theoretical courtesy: the daemon keeps running across an install, so
+    /// a freshly built client routinely talks to the previous build. A client
+    /// that cannot read an old report at all would report "daemon not responding"
+    /// for something that is responding perfectly.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        upperLimit = try container.decode(Int.self, forKey: .upperLimit)
+        lowerLimit = try container.decode(Int.self, forKey: .lowerLimit)
+        thermalCutoff = try container.decode(Double.self, forKey: .thermalCutoff)
+        sleepPolicy = try container.decode(String.self, forKey: .sleepPolicy)
+        gate = try container.decode(String.self, forKey: .gate)
+        reason = try container.decode(String.self, forKey: .reason)
+        gateIsTrusted = try container.decode(Bool.self, forKey: .gateIsTrusted)
+        chargerReason = try container.decodeIfPresent(String.self, forKey: .chargerReason)
+        decidedAt = try container.decode(Date.self, forKey: .decidedAt)
+
+        // Added after the first release. A daemon that does not mention support
+        // is one from before the question could be asked, and every machine this
+        // ran on then had a gate — so `true` is the honest default, not optimism.
+        limitingIsSupported = try container.decodeIfPresent(
+            Bool.self, forKey: .limitingIsSupported
+        ) ?? true
+        preventIdleSleepWhileCharging = try container.decodeIfPresent(
+            Bool.self, forKey: .preventIdleSleepWhileCharging
+        ) ?? false
+        reasonCode = try container.decodeIfPresent(String.self, forKey: .reasonCode) ?? "unknown"
+        version = try container.decodeIfPresent(String.self, forKey: .version) ?? "unknown"
     }
 }
 

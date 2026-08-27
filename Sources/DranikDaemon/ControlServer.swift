@@ -31,23 +31,38 @@ public final class ControlServer {
     /// the daemon's queue.
     private let applyConfig: (ChargeConfig) -> Void
     private let reloadConfig: () -> Void
+    /// Arms the charge gate again after a verification failure disarmed it.
+    private let restoreTrust: () -> Void
 
+    /// `initialConfig` is what the daemon loaded at startup, so that a command
+    /// arriving before the first decision has something to modify.
+    ///
+    /// Without it `disable` would have to refuse until a decision was published,
+    /// and `disable` is the way out when something is wrong — the last command
+    /// that should depend on the daemon being healthy enough to have decided.
     public init(
         path: String = ControlProtocol.defaultSocketPath,
+        initialConfig: ChargeConfig,
         applyConfig: @escaping (ChargeConfig) -> Void,
-        reloadConfig: @escaping () -> Void
+        reloadConfig: @escaping () -> Void,
+        restoreTrust: @escaping () -> Void = {}
     ) {
         self.path = path
         self.applyConfig = applyConfig
         self.reloadConfig = reloadConfig
+        self.restoreTrust = restoreTrust
+        snapshot.setConfig(initialConfig)
     }
 
     deinit {
         stop()
     }
 
-    public func publish(_ report: DaemonReport) {
-        snapshot.set(report)
+    /// The config travels with the report rather than being reconstructed from
+    /// it. Reconstructing was the bug: a report is a rendering, and a field a
+    /// rendering happens not to carry comes back as a default.
+    public func publish(_ report: DaemonReport, config: ChargeConfig) {
+        snapshot.set(report, config: config)
     }
 
     public func start() throws {
@@ -154,24 +169,37 @@ public final class ControlServer {
             return ControlResponse(ok: true, report: report)
 
         case .disable:
-            return change(to: ChargeConfig(upperLimit: 100), asked: "disable")
+            let current = snapshot.config()
+            // `.with` and not a fresh `ChargeConfig`: turning limiting off is a
+            // statement about the limit and nothing else. Rebuilding the config
+            // here used to reset the thermal cutoff, the sleep policy and
+            // `preventIdleSleepWhileCharging` to defaults — and then write them
+            // to disk, so `dranik off` silently discarded them for good.
+            return change(to: current.with(upperLimit: 100), asked: "disable")
 
         case .setLimit:
             guard let upper = request.upper else {
                 return .failure("setLimit needs an upper limit")
             }
-            guard let current = snapshot.get() else {
-                return .failure("the daemon has not reached a decision yet")
-            }
-            // Built through the same validating initialiser as every other path,
+            let current = snapshot.config()
+            // Still through the same validating initialiser as every other path,
             // so the socket is not a way around the bounds.
-            let config = ChargeConfig(
-                upperLimit: upper,
-                lowerLimit: request.lower,
-                thermalCutoff: current.thermalCutoff,
-                sleepPolicy: SleepPolicy(rawValue: current.sleepPolicy) ?? .holdLimit
+            return change(
+                to: current.with(upperLimit: upper, lowerLimit: request.lower),
+                asked: "setLimit \(upper)"
             )
-            return change(to: config, asked: "setLimit \(upper)")
+
+        case .retrust:
+            guard snapshot.get()?.gateIsTrusted == false else {
+                return ControlResponse(
+                    ok: true, report: snapshot.get(),
+                    notes: ["the gate was already trusted — nothing to do"]
+                )
+            }
+            log.notice("retrust requested")
+            let before = snapshot.get()?.decidedAt
+            restoreTrust()
+            return settled(after: before, notes: ["charge limiting re-armed"])
 
         case .reload:
             reloadConfig()
@@ -198,8 +226,24 @@ public final class ControlServer {
         // daemon was opening it. Bounded, and on this queue only — the daemon's
         // is never blocked, so a wedged controller costs a stale answer and
         // nothing more.
-        var report = snapshot.get()
-        var notes = config.corrections
+        var response = settled(after: before, notes: config.corrections)
+        guard response.report?.decidedAt == before || response.report == nil else {
+            return response
+        }
+
+        // No new decision in time. Say what will be in force and be explicit
+        // that the rest of the report predates the change.
+        response.report?.upperLimit = config.upperLimit
+        response.report?.lowerLimit = config.lowerLimit
+        return response
+    }
+
+    /// Waits briefly for the decision a command provokes, so the gate and reason
+    /// reported belong to the new state rather than the old one.
+    ///
+    /// Bounded, and on this queue only — the daemon's is never blocked, so a
+    /// wedged controller costs a stale answer and nothing more.
+    private func settled(after before: Date?, notes: [String]) -> ControlResponse {
         let deadline = Date().addingTimeInterval(Self.settleTimeout)
         while Date() < deadline {
             usleep(20_000)
@@ -207,14 +251,11 @@ public final class ControlServer {
                 return ControlResponse(ok: true, report: fresh, notes: notes)
             }
         }
-
-        // No new decision in time. Say what will be in force and be explicit
-        // that the rest of the report predates the change.
-        report?.upperLimit = config.upperLimit
-        report?.lowerLimit = config.lowerLimit
-        notes.append("applied, but the daemon has not re-decided yet — "
-            + "the gate and reason above predate the change")
-        return ControlResponse(ok: true, report: report, notes: notes)
+        return ControlResponse(
+            ok: true, report: snapshot.get(),
+            notes: notes + ["applied, but the daemon has not re-decided yet — "
+                + "the gate and reason above predate the change"]
+        )
     }
 
     /// `admin` is gid 80 on macOS. Looked up rather than hardcoded, falling back
@@ -241,10 +282,19 @@ public enum ControlServerError: Error, CustomStringConvertible {
 private final class SnapshotBox {
     private let lock = NSLock()
     private var value: DaemonReport?
+    /// Never absent: seeded with what the daemon loaded before the socket opened.
+    private var configuration = ChargeConfig()
 
-    func set(_ report: DaemonReport) {
+    func set(_ report: DaemonReport, config: ChargeConfig) {
         lock.lock()
         value = report
+        configuration = config
+        lock.unlock()
+    }
+
+    func setConfig(_ config: ChargeConfig) {
+        lock.lock()
+        configuration = config
         lock.unlock()
     }
 
@@ -252,5 +302,11 @@ private final class SnapshotBox {
         lock.lock()
         defer { lock.unlock() }
         return value
+    }
+
+    func config() -> ChargeConfig {
+        lock.lock()
+        defer { lock.unlock() }
+        return configuration
     }
 }
