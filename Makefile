@@ -9,7 +9,7 @@ APP_BUNDLE := $(BUILD_DIR)/Dranik.app
 APP_VERSION := $(shell sed -n 's/.*current = "\(.*\)".*/\1/p' Sources/DranikCore/Version.swift)
 AGENT_PLIST := $(HOME)/Library/LaunchAgents/com.dranik.battery.app.plist
 
-.PHONY: all build test run status dump probe tools clean help install uninstall daemon-dry-run logs gate-dry-run gate-experiment app app-run install-app uninstall-app ui-drill ui-snapshots
+.PHONY: all build test run status dump probe tools clean help install uninstall daemon-dry-run logs gate-dry-run gate-experiment app app-run install-app uninstall-app ui-drill ui-snapshots icon
 
 all: build
 
@@ -51,8 +51,9 @@ uninstall:
 ## privileged part, so the app needs no entitlements and no Developer ID.
 app: build
 	@rm -rf "$(APP_BUNDLE)"
-	@mkdir -p "$(APP_BUNDLE)/Contents/MacOS"
+	@mkdir -p "$(APP_BUNDLE)/Contents/MacOS" "$(APP_BUNDLE)/Contents/Resources"
 	@cp "$(BUILD_DIR)/DranikApp" "$(APP_BUNDLE)/Contents/MacOS/Dranik"
+	@cp assets/Dranik.icns "$(APP_BUNDLE)/Contents/Resources/Dranik.icns"
 	@sed 's/__VERSION__/$(APP_VERSION)/g' scripts/Info.plist > "$(APP_BUNDLE)/Contents/Info.plist"
 	@codesign --force --sign - "$(APP_BUNDLE)"
 	@echo "built $(APP_BUNDLE) (version $(APP_VERSION))"
@@ -137,6 +138,13 @@ clean:
 
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/^## //'
+
+## icon: re-render assets/Dranik.icns from the SVG (needs rsvg-convert)
+##
+## The .icns is committed, so building the app never needs this. Run it only
+## when the artwork changes.
+icon:
+	./scripts/make-icon.sh
 
 ## ui-drill: run the menu bar app against a daemon that misbehaves on purpose
 ##
