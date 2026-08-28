@@ -1,8 +1,15 @@
+<img src="assets/dranik-logo.svg" width="132" align="right" alt="">
+
 # dranik-battery
+
+[![CI](https://github.com/tmaxell/dranik-battery/actions/workflows/ci.yml/badge.svg)](https://github.com/tmaxell/dranik-battery/actions/workflows/ci.yml)
 
 Keeps a Mac laptop's battery below a chosen charge level, so it does not spend
 months sitting at 100 %. A root daemon, a command-line client and a menu bar app,
 with no dependencies beyond the system frameworks.
+
+A *dranik* is a fried potato pancake. The one in the mark is browned to 80 % and
+no further, which is the whole idea.
 
 ```
 $ dranik daemon
@@ -201,6 +208,7 @@ Sources/
   dranik/           CLI
   dranikd/          Daemon entry point
 tools/              The measurement tools the facts above came from
+assets/             Logo and app icon: one SVG each, and the .icns built from them
 ```
 
 The daemon is event-driven: `notify(3)` for charge and power-source changes,
@@ -216,7 +224,19 @@ make test              # 224 tests, 703 assertions
 make ui-drill          # the app against a daemon that misbehaves on purpose
 make ui-snapshots      # render every popover state to PNG, light and dark
 make daemon-dry-run    # the whole decision cycle, writing nothing
+make icon              # re-render the .icns after editing the artwork
+make test-ci           # the suite minus the groups that need this machine
 ```
+
+Every push builds on GitHub Actions: compile, the suite, the UI drill, and the
+app bundle, which is uploaded as an artifact. CI runs `make test-ci` rather than
+`make test` — three test groups read the SMC and the battery of the machine they
+run on, and "a charge gate is detected" is an assertion about *this* hardware.
+On a builder without one it would fail while saying nothing about the code.
+
+The app icon is committed as `assets/Dranik.icns`, so building the app never
+needs a renderer. `make icon` regenerates it from `assets/dranik-icon.svg` and is
+the only thing here that wants a non-system tool (`rsvg-convert`).
 
 `make ui-drill` starts a real control server on a temporary socket and feeds the
 app reports a healthy daemon will not produce — a gate it no longer trusts,
