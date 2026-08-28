@@ -9,7 +9,7 @@ APP_BUNDLE := $(BUILD_DIR)/Dranik.app
 APP_VERSION := $(shell sed -n 's/.*current = "\(.*\)".*/\1/p' Sources/DranikCore/Version.swift)
 AGENT_PLIST := $(HOME)/Library/LaunchAgents/com.dranik.battery.app.plist
 
-.PHONY: all build test run status dump probe tools clean help install uninstall daemon-dry-run logs gate-dry-run gate-experiment app app-run install-app uninstall-app ui-drill ui-snapshots icon
+.PHONY: all build test test-ci run status dump probe tools clean help install uninstall daemon-dry-run logs gate-dry-run gate-experiment app app-run install-app uninstall-app ui-drill ui-snapshots icon
 
 all: build
 
@@ -33,6 +33,12 @@ build:
 ## instead. Exits non-zero on failure. Reads only — writes nothing to the SMC.
 test:
 	$(SWIFT) run -c $(CONFIG) dranik-selftest
+
+## test-ci: the suite minus the groups that need this machine's hardware
+##
+## For builders that are some other Mac. See the note in Tests/.../main.swift.
+test-ci:
+	$(SWIFT) run -c $(CONFIG) dranik-selftest --skip-hardware
 
 ## install: install dranikd as a LaunchDaemon. Run as yourself, NOT with sudo —
 ##          it elevates the install script on its own.
