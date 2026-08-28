@@ -1,4 +1,4 @@
-<img src="assets/dranik-logo.svg" width="132" align="right" alt="">
+<img src="assets/dranik-logo.svg" width="120" alt="">
 
 # dranik-battery
 
@@ -34,11 +34,11 @@ tests. See `dranik soak`.
 
 ## Requirements
 
-| | |
+| What | Needs |
 |---|---|
 | Hardware | Apple Silicon Mac. Intel is not supported and is not planned |
-| macOS | 14.0+ |
-| Build | Swift 6 from Command Line Tools, or Xcode. `swift-tools-version: 5.10` builds under either |
+| macOS | 14.0 or newer |
+| Toolchain | Swift 6 from Command Line Tools, or Xcode. `swift-tools-version: 5.10` builds under either |
 
 Xcode is not required for anything, including the menu bar app: SwiftUI ships in
 the Command Line Tools SDK, and the app bundle is assembled from an `Info.plist`
