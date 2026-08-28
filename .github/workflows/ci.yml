@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build, test, package
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Printed rather than pinned: the package targets Swift 5.10 tooling and
+      # builds under anything newer, so what matters is seeing what ran.
+      - name: Toolchain
+        run: |
+          swift --version
+          sw_vers
+
+      - name: Build
+        run: make build
+
+      # Not `make test`: three groups read this machine's SMC and battery, and
+      # "a charge gate is detected" is an assertion about the hardware it runs
+      # on. A builder without one would fail it, which would say nothing about
+      # the code. Those groups run locally, where they mean something.
+      - name: Test
+        run: make test-ci
+
+      - name: Drill the menu bar app against a misbehaving daemon
+        run: make ui-drill
+
+      - name: Assemble the app bundle
+        run: make app
+
+      - name: Check the bundle is complete
+        run: |
+          test -x .build/release/Dranik.app/Contents/MacOS/Dranik
+          test -f .build/release/Dranik.app/Contents/Resources/Dranik.icns
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+            .build/release/Dranik.app/Contents/Info.plist
+          codesign --verify --verbose .build/release/Dranik.app
+
+      # `ditto` rather than the action's own zipping, which does not preserve
+      # the executable bit an .app needs to launch.
+      - name: Package
+        run: ditto -c -k --keepParent .build/release/Dranik.app Dranik.app.zip
+
+      - name: Upload the app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dranik-app
+          path: Dranik.app.zip
+          if-no-files-found: error
