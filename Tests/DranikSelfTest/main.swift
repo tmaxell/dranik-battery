@@ -22,6 +22,7 @@ runSoakAnalysisTests()
 runSoakRatioTests()
 runControlTests()
 runMenuBarPresentationTests()
+runPollCadenceTests()
 
 // Power-event subscriptions need neither a battery nor a charge gate — only
 // notifyd and IOKit, which any Mac has.
