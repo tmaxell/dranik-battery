@@ -19,30 +19,13 @@ final class AppModel: ObservableObject {
     /// otherwise a refresh landing mid-drag would yank it back.
     @Published var draftLimit: Double
 
-    /// How often the daemon is asked while the popover is open.
-    ///
-    /// The gate moves on power events, which are observed directly, and on the
-    /// daemon's own safety net every 60s. Five seconds is for the latter and for
-    /// a limit changed from the CLI in another window.
-    private static let pollInterval: TimeInterval = 5
-    /// A ceiling on that polling, in ticks.
-    ///
-    /// `onDisappear` is not guaranteed to arrive for a menu bar window, and a
-    /// timer that outlives the popover is exactly the cost this design exists to
-    /// avoid. Two minutes of an open popover is already unusual; after that it
-    /// stops, and reopening starts it again.
-    private static let maximumPollTicks = 24
-
     private let socketPath: String
     private let work = DispatchQueue(label: "com.dranik.battery.app.client", qos: .userInitiated)
     private var monitor: PowerEventMonitor?
     private var pollTimer: DispatchSourceTimer?
-    private var pollTicks = 0
+    private var cadence = PollCadence()
     private var isDragging = false
     private var isPreview = false
-
-    /// The last link state, reused when refreshing from the battery alone.
-    private var lastLink: DaemonLink = .notRunning
 
     /// The limit to restore when limiting is switched back on.
     ///
@@ -64,6 +47,7 @@ final class AppModel: ObservableObject {
         self.summary = MenuBarPresentation.summary(link: .notRunning, battery: nil)
         self.draftLimit = Double(ChargeConfig.defaultUpper)
         startWatchingPower()
+        startPolling()
         refresh()
     }
 
@@ -80,12 +64,15 @@ final class AppModel: ObservableObject {
 
     func popoverAppeared() {
         guard !isPreview else { return }
-        refresh()
+        cadence.popoverOpened()
         startPolling()
+        refresh()
     }
 
     func popoverDisappeared() {
-        stopPolling()
+        guard !isPreview else { return }
+        cadence.popoverClosed()
+        startPolling()
     }
 
     // MARK: - Commands
@@ -138,24 +125,7 @@ final class AppModel: ObservableObject {
             let facts = Self.readBattery()
             let link = Self.ask(self.socketPath)
             Task { @MainActor in
-                self.lastLink = link
                 self.apply(MenuBarPresentation.summary(link: link, battery: facts), facts)
-            }
-        }
-    }
-
-    /// Re-reads the battery without touching the socket.
-    ///
-    /// Used for the frequent event — the percentage changing — so that sitting
-    /// idle with the popover closed costs no IPC at all. The cost is that a limit
-    /// changed elsewhere is not noticed until the popover opens or the charger is
-    /// plugged or unplugged, which is when the gate actually moves.
-    private func refreshBatteryOnly() {
-        let link = lastLink
-        work.async { [weak self] in
-            let facts = Self.readBattery()
-            Task { @MainActor in
-                self?.apply(MenuBarPresentation.summary(link: link, battery: facts), facts)
             }
         }
     }
@@ -251,42 +221,34 @@ final class AppModel: ObservableObject {
     private func startWatchingPower() {
         // The same mechanism the daemon uses, and for the same reason: no timer
         // is running while nothing is going on.
-        let monitor = PowerEventMonitor(queue: work, observesSleep: false) { [weak self] event in
-            Task { @MainActor in
-                switch event {
-                case .powerSourceChanged:
-                    // Plugging in or out is when the gate actually moves, and it
-                    // happens a few times a day. Worth a round trip.
-                    self?.refresh()
-                default:
-                    self?.refreshBatteryOnly()
-                }
-            }
+        // Every event gets a full refresh. The cheaper path — re-reading the
+        // battery and reusing the last report — was its own way of being wrong:
+        // it rendered a fresh charge against a gate position that had since
+        // moved. A round trip on a socket the daemon already has open costs
+        // less than being confidently out of date.
+        let monitor = PowerEventMonitor(queue: work, observesSleep: false) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
         }
         try? monitor.start()
         self.monitor = monitor
     }
 
+    /// Runs for the life of the app, only changing pace. See `PollCadence` for
+    /// why it may never stop: the events this used to rely on do not fire when
+    /// charging starts or stops at the limit.
     private func startPolling() {
-        stopPolling()
-        pollTicks = 0
+        pollTimer?.cancel()
+        let interval = cadence.interval
         let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now() + Self.pollInterval, repeating: Self.pollInterval)
+        timer.schedule(deadline: .now() + interval, repeating: interval)
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            pollTicks += 1
-            guard pollTicks <= Self.maximumPollTicks else {
-                stopPolling()
-                return
+            if cadence.tick() {
+                startPolling()
             }
             refresh()
         }
         timer.resume()
         pollTimer = timer
-    }
-
-    private func stopPolling() {
-        pollTimer?.cancel()
-        pollTimer = nil
     }
 }

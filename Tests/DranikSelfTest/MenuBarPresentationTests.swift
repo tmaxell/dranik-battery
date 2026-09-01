@@ -234,3 +234,60 @@ func runMenuBarPresentationTests() {
         expectTrue(codes.allSatisfy { !$0.isEmpty })
     }
 }
+
+/// The status item once sat on a charging bolt while the battery was not
+/// charging, because the app only updated on events and the transition that
+/// mattered produced none. These guard the rule that came out of that.
+func runPollCadenceTests() {
+    test("a closed popover still polls") {
+        // The whole bug: with the popover closed the app had nothing scheduled
+        // at all, so a gate that moved was never noticed.
+        let cadence = PollCadence()
+        expectFalse(cadence.isPopoverOpen)
+        expectEqual(cadence.interval, PollCadence.whileClosed)
+        expectTrue(cadence.interval > 0)
+    }
+
+    test("an open popover polls faster") {
+        var cadence = PollCadence()
+        cadence.popoverOpened()
+        expectEqual(cadence.interval, PollCadence.whileOpen)
+        expectTrue(PollCadence.whileOpen < PollCadence.whileClosed)
+    }
+
+    test("a missed onDisappear falls back to the idle pace rather than stopping") {
+        var cadence = PollCadence()
+        cadence.popoverOpened()
+        for _ in 0..<PollCadence.maximumFastTicks {
+            expectFalse(cadence.tick(), "still within the fast window")
+        }
+        expectTrue(cadence.tick(), "the ceiling should force a reschedule")
+        expectFalse(cadence.isPopoverOpen)
+        expectEqual(cadence.interval, PollCadence.whileClosed, "idle, not stopped")
+    }
+
+    test("the cadence never reports an interval of zero, whatever happens to it") {
+        var cadence = PollCadence()
+        var firstBadStep: Int?
+        for step in 0..<200 {
+            if step % 37 == 0 { cadence.popoverOpened() }
+            if step % 53 == 0 { cadence.popoverClosed() }
+            _ = cadence.tick()
+            if cadence.interval <= 0, firstBadStep == nil { firstBadStep = step }
+        }
+        // One assertion, not two hundred: a regression here should read as one
+        // line rather than bury the rest of the run.
+        expectNil(firstBadStep, "stopped polling at step \(firstBadStep ?? -1)")
+    }
+
+    test("closing the popover resets the fast run") {
+        var cadence = PollCadence()
+        cadence.popoverOpened()
+        for _ in 0..<10 { _ = cadence.tick() }
+        cadence.popoverClosed()
+        cadence.popoverOpened()
+        for _ in 0..<PollCadence.maximumFastTicks {
+            expectFalse(cadence.tick(), "the count should have started again")
+        }
+    }
+}
