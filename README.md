@@ -213,8 +213,12 @@ assets/             Logo and app icon: one SVG each, and the .icns built from th
 
 The daemon is event-driven: `notify(3)` for charge and power-source changes,
 `IORegisterForSystemPower` for sleep and wake, and a long-interval safety net
-rather than a polling loop. Idle cost, measured over a week of uptime: about 1.6
-seconds of CPU per day for the daemon and 4.7 for the app.
+rather than a polling loop. The app is the same, with a safety net of its own —
+charging stopping at the limit produces no notification at all, so something has
+to ask anyway.
+
+Idle cost, measured: about 1.6 seconds of CPU per day for the daemon and 19 for
+the app, or 0.02 % of one core.
 
 ## Development
 

@@ -10,7 +10,12 @@ import SwiftUI
 /// this one is an alternative to.
 @main
 struct DranikApp: App {
-    @StateObject private var model = AppModel()
+    // `--socket` has to reach the running app too, not just `--check`. It
+    // claimed to point "the app" at another daemon and only ever pointed the
+    // diagnostic there, which made the live behaviour untestable.
+    @StateObject private var model = AppModel(
+        socketPath: DranikApp.value(of: "--socket") ?? ControlProtocol.defaultSocketPath
+    )
 
     init() {
         // `--check` prints exactly what the popover would show and exits.
@@ -37,7 +42,7 @@ struct DranikApp: App {
     /// Both exist for the drill: the states worth being sure about are the ones a
     /// healthy daemon will not produce on demand, and the only way to see them is
     /// to talk to one that produces them deliberately.
-    private static func value(of flag: String) -> String? {
+    static func value(of flag: String) -> String? {
         let arguments = CommandLine.arguments
         guard let index = arguments.firstIndex(of: flag), index + 1 < arguments.count else {
             return nil
