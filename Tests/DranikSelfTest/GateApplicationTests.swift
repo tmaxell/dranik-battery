@@ -1,3 +1,5 @@
+import DranikSMC
+import DranikDaemon
 import DranikCore
 import Foundation
 
@@ -108,5 +110,55 @@ func runGateApplicationTests() {
                 }
             }
         }
+    }
+}
+
+/// A daemon on hardware with no charge gate reported `gate: closed` after a
+/// limit change, because the actuator looped over zero keys and called that
+/// success. Reproduced on 2026-10-13:
+///
+///     before: Gate unknown   no charge-gate key on this machine
+///     dranik limit 75
+///     after:  Gate closed    on battery — gate held shut so plugging in...
+func runEmptyActuationTests() {
+    test("writing to no keys at all is not a successful application") {
+        let smc: SMCConnection
+        do {
+            smc = try SMCConnection()
+        } catch {
+            try skip("AppleSMC unavailable: \(error)")
+        }
+        defer { smc.close() }
+
+        // An actuator with nothing to actuate. This is exactly what the daemon
+        // holds on a machine whose charge gate the firmware removed.
+        let actuator = GateActuator(
+            smc: smc,
+            specs: [],
+            queue: DispatchQueue(label: "test.actuator.empty"),
+            dryRun: true
+        )
+
+        expectFalse(
+            actuator.apply(.closed, reason: "nothing to write to"),
+            "zero keys written is not a write that worked"
+        )
+        expectFalse(
+            actuator.apply(.open, reason: "nothing to write to"),
+            "and the same in the other direction"
+        )
+    }
+
+    test("a refused application leaves the hardware's own answer standing") {
+        // The second half of the same defect: once `applied` is false,
+        // GateApplication must not let the requested position be believed.
+        let outcome = GateApplication.resolve(
+            requested: .closed,
+            reason: "limit reached",
+            allowed: true,
+            applied: false,
+            actualGate: nil
+        )
+        expectNil(outcome.believedGate, "nothing was written, so nothing is known")
     }
 }
