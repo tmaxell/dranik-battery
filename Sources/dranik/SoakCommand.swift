@@ -8,7 +8,7 @@ import Foundation
 /// that took reading three days of records together. This is that reading, as a
 /// command.
 enum SoakCommand {
-    static func run(since: String) -> Never {
+    static func run(since: String, socket: String) -> Never {
         let records: [DaemonLogRecord]
         do {
             records = try fetch(since: since)
@@ -17,12 +17,11 @@ enum SoakCommand {
         }
 
         guard !records.isEmpty else {
-            print("""
-            No daemon records in the last \(since).
-
-            Either it has not been running, or the log has rolled over. `dranik daemon`
-            says whether one is running now.
-            """)
+            // An empty window is not evidence that nothing is running. A daemon
+            // with no gate to drive writes one line at startup and then nothing
+            // at all, so every window after that one looks like an absence.
+            // Asking it is cheaper than guessing, and it was guessing wrong.
+            print(noRecords(since: since, socket: socket))
             exit(1)
         }
 
@@ -72,11 +71,52 @@ enum SoakCommand {
         return records
     }
 
+    private static func noRecords(since: String, socket: String) -> String {
+        var lines = ["No daemon records in the last \(since).", ""]
+
+        guard let report = (try? ControlClient.send(ControlRequest(command: .status), to: socket))?
+            .report else {
+            lines.append("No daemon answered either, so either it has not been running")
+            lines.append("or the log has rolled over.")
+            return lines.joined(separator: "\n")
+        }
+
+        if report.limitingIsSupported {
+            lines.append("A daemon IS running and can limit charging — this window just")
+            lines.append("contains none of its records. Try a longer one.")
+        } else {
+            lines.append("A daemon IS running, but it reports no charge gate on this")
+            lines.append("machine. Nothing is being limited, and a daemon with nothing")
+            lines.append("to do has nothing to write down — which is why this window is")
+            lines.append("empty. The silence is the finding.")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// The window actually covered, against the one asked for.
+    ///
+    /// `--since 7d` quietly reporting a day and a half reads as a verdict about
+    /// the week. The system log keeps far less than people assume.
+    private static func requestedSeconds(_ since: String) -> TimeInterval? {
+        guard let unit = since.last, let value = Double(since.dropLast()) else { return nil }
+        switch unit {
+        case "m": return value * 60
+        case "h": return value * 3600
+        case "d": return value * 86400
+        default: return nil
+        }
+    }
+
     private static func render(_ analysis: SoakAnalysis, since: String) -> String {
         var lines = ["Daemon behaviour over the last \(since)", ""]
 
+        var coverageNote: String?
         if let duration = analysis.duration, duration > 0 {
             lines.append(row("Records span", format(duration)))
+            if let asked = requestedSeconds(since), duration < asked * 0.8 {
+                coverageNote = "Records only go back \(format(duration)) of the \(since) asked for"
+                    + " — the system log keeps less than that."
+            }
         }
         lines.append(row("Daemon starts", "\(analysis.restarts)"))
         lines.append(row("Gate closed", "\(analysis.gateClosures) time(s)"))
@@ -90,6 +130,11 @@ enum SoakCommand {
             "Gate checks",
             "\(analysis.verificationsConfirmed) passed, \(analysis.verificationFailures) failed"
         ))
+
+        if let coverageNote {
+            lines.append("")
+            lines.append("  " + coverageNote)
+        }
 
         lines.append("")
         if analysis.concerns.isEmpty {

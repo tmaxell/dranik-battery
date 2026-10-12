@@ -26,6 +26,12 @@ public struct DaemonLogRecord: Equatable, Sendable {
 public struct SoakAnalysis: Equatable, Sendable {
     public var restarts = 0
     public var watchdogStalls = 0
+    /// True when the daemon spent the window unable to limit anything.
+    ///
+    /// Without this the report read "nothing to report — the gate moved when it
+    /// should" on a machine that has no gate, while the battery sat at 100 %
+    /// for six weeks. Silence from a daemon with nothing to do is not health.
+    public var limitingUnavailable = false
     public var verificationFailures = 0
     /// Checks that confirmed the gate did what was asked.
     ///
@@ -55,6 +61,7 @@ public struct SoakAnalysis: Equatable, Sendable {
             let message = record.message
             if message.contains("dranikd running") { result.restarts += 1 }
             if message.contains("presumed stuck") { result.watchdogStalls += 1 }
+            if message.contains("no charge-gate key") { result.limitingUnavailable = true }
             if message.contains("gate check failed") { result.verificationFailures += 1 }
             if message.contains("gate verified") { result.verificationsConfirmed += 1 }
             if message.contains("charge limiting disabled") { result.distrusts += 1 }
@@ -85,6 +92,19 @@ public struct SoakAnalysis: Equatable, Sendable {
 
     public var concerns: [Concern] {
         var found: [Concern] = []
+
+        // First, because every verdict below is about how well the gate was
+        // driven, and there was no gate to drive.
+        if limitingUnavailable {
+            found.append(Concern(
+                severity: .serious,
+                text: """
+                no charge gate was recognised on this machine, so nothing was \
+                being limited for any of this window — whatever the gate figures \
+                below say
+                """
+            ))
+        }
 
         if distrusts > 0 {
             found.append(Concern(
