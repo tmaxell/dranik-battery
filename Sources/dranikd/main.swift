@@ -88,15 +88,6 @@ do {
     fail("cannot probe SMC capabilities: \(error)", code: EX_OSERR)
 }
 
-guard capabilities.chargeGate.isSupported else {
-    // Not a crash loop: launchd would restart this forever on a machine that is
-    // simply not supported. Say so once and stop.
-    fail("""
-    no charge-gate key on this machine matched its expected description. \
-    Nothing here can limit charging, and nothing will be written.
-    """, code: EX_UNAVAILABLE)
-}
-
 withExtendedLifetime(lock) {
     Daemon(
         smc: smc,

@@ -14,6 +14,19 @@ func runWriteGuardTests() {
         }
     }
 
+    /// The gate spec this machine actually has.
+    ///
+    /// Two of the cases below need a key that is present *and* writable, and
+    /// one of them reaches the kernel. Since 2026-10-12 this machine has no
+    /// such key, so they skip rather than fail: the guard they check is not
+    /// broken, there is simply nothing here to guard.
+    func gateSpec(_ smc: SMCConnection) throws -> SMCKeySpec {
+        guard let spec = try Capabilities.detect(using: smc).chargeGate.specs.first else {
+            try skip("no charge gate on this machine — nothing writable to exercise the guard on")
+        }
+        return spec
+    }
+
     test("write refuses a key this machine does not have") {
         let smc = try connect()
         defer { smc.close() }
@@ -38,12 +51,15 @@ func runWriteGuardTests() {
         let smc = try connect()
         defer { smc.close() }
 
-        // CHTE exists and is writable, but claim the wrong size for it. A
-        // firmware change that repurposes a key would look exactly like this,
-        // and guessing past it could actuate something entirely different.
+        // Claim the wrong size for a key that certainly exists. B0AV rather
+        // than the gate, deliberately: metadata is checked before writability,
+        // so this case needs only presence — and tying it to the gate is what
+        // made it fail the day the gate went away. A firmware change that
+        // repurposes a key looks exactly like this, and guessing past it could
+        // actuate something entirely different.
         do {
             try smc.write(
-                SMCKey("CHTE")!,
+                SMCKey("B0AV")!,
                 bytes: [0x00],
                 matching: SMCKeyInfo(size: 1, type: "ui8", attributes: 0xD4)
             )
@@ -77,9 +93,12 @@ func runWriteGuardTests() {
         let smc = try connect()
         defer { smc.close() }
 
-        let info = try expectNotNil((try? smc.keyInfo(SMCKey("CHTE")!)) ?? nil)
+        // Needs a key that is present and writable: the length check sits after
+        // the writability check, so a read-only key would throw the wrong error.
+        let spec = try gateSpec(smc)
+        let info = try expectNotNil((try? smc.keyInfo(spec.key)) ?? nil)
         do {
-            try smc.write(SMCKey("CHTE")!, bytes: [0x00, 0x00], matching: info)
+            try smc.write(spec.key, bytes: [0x00, 0x00, 0x00, 0x00, 0x00], matching: info)
             expectTrue(false, "expected the write to be refused")
         } catch SMCError.payloadSizeMismatch {
             // Expected.
@@ -96,7 +115,7 @@ func runWriteGuardTests() {
             try skip("running as root — this test asserts the unprivileged path")
         }
 
-        let spec = SMCKeySpec.chargeGateCHTE
+        let spec = try gateSpec(smc)
         let before = try expectNotNil((try? smc.read(spec.key)) ?? nil)
 
         // Writes back exactly what the key already holds. That cannot change

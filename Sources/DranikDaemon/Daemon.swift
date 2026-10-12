@@ -26,6 +26,9 @@ public final class Daemon {
 
     private let smc: SMCConnection
     private let capabilities: Capabilities
+    /// What this process is entitled to do, decided once from what probing
+    /// found. See `DaemonMode`.
+    private let mode: DaemonMode
     private let actuator: GateActuator
     private let watchdog: Watchdog
     private let dryRun: Bool
@@ -57,6 +60,7 @@ public final class Daemon {
     ) {
         self.smc = smc
         self.capabilities = capabilities
+        self.mode = DaemonMode.forGate(isSupported: capabilities.chargeGate.isSupported)
         self.config = config
         self.dryRun = dryRun
         self.statePath = statePath
@@ -71,6 +75,10 @@ public final class Daemon {
     // MARK: - Lifecycle
 
     public func run() -> Never {
+        guard mode == .limiting else {
+            runObserving()
+        }
+
         let gateNames = capabilities.chargeGate.keys.map(\.description).joined(separator: "+")
         // Before anything else it might print. The first decision line appearing
         // above the banner was how someone came to read "(write)" as a write.
@@ -120,6 +128,60 @@ public final class Daemon {
         limit \(self.config.lowerLimit, privacy: .public)–\(self.config.upperLimit, privacy: .public)%, \
         gate \(gateNames, privacy: .public)
         """)
+
+        withExtendedLifetime(signalSources) {
+            dispatchMain()
+        }
+    }
+
+    /// Runs on a machine where nothing was recognised that could limit charging.
+    ///
+    /// Exiting would be simpler, and that is what this used to do — with
+    /// `EX_UNAVAILABLE`, which `KeepAlive { SuccessfulExit: false }` reads as a
+    /// reason to try again. Ten seconds later, for five hours.
+    ///
+    /// Staying up is also the more useful answer. The socket is what tells the
+    /// CLI and the app *why* nothing is being limited; without it they can only
+    /// report that the daemon is missing, which sends someone looking in the
+    /// wrong place entirely.
+    private func runObserving() -> Never {
+        log.fault("""
+        no charge-gate key on this machine matched its expected description. \
+        Nothing here can limit charging, and nothing will be written. \
+        Staying up to answer clients.
+        """)
+        if dryRun {
+            print("\nNo charge gate on this machine. Observing only — nothing will be written.\n")
+            fflush(stdout)
+        }
+
+        installSignalHandlers()
+        lastReason = "no charge-gate key on this machine"
+
+        // Events only keep the battery figure in the report current. No safety
+        // net and no watchdog: there is nothing to re-decide and nothing to
+        // guard, and a watchdog here would exit non-zero for want of decisions —
+        // the restart loop again, at two minutes instead of ten seconds.
+        do {
+            let monitor = PowerEventMonitor(queue: queue) { [weak self] event in
+                guard let self else { return }
+                // Answered, never refused: observing must not delay a sleep.
+                if case .canSleep(let acknowledgement) = event { acknowledgement.allow() }
+                if case .willSleep(let acknowledgement) = event { acknowledgement.allow() }
+                self.publishReport()
+            }
+            try monitor.start()
+            self.monitor = monitor
+        } catch {
+            // Not fatal here. Without a gate the subscriptions were only keeping
+            // a readout fresh, and answering a stale figure beats not answering.
+            log.error("""
+            could not subscribe to power events: \
+            \(String(describing: error), privacy: .public) — the report will not refresh
+            """)
+        }
+
+        startControlServer()
 
         withExtendedLifetime(signalSources) {
             dispatchMain()
@@ -197,6 +259,14 @@ public final class Daemon {
         watchdog.stop()
         safetyNet?.cancel()
         monitor?.stop()
+
+        guard mode == .limiting else {
+            // Nothing was ever written, so there is nothing to put back. Saying
+            // "opening the gate" here would be a lie in the log.
+            log.notice("shutting down (\(reason, privacy: .public)) — nothing was being limited")
+            smc.close()
+            exit(code)
+        }
 
         log.notice("shutting down (\(reason, privacy: .public)) — opening the gate")
         if dryRun {
