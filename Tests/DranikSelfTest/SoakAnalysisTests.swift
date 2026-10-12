@@ -132,3 +132,50 @@ func runSoakRatioTests() {
         )
     }
 }
+
+/// `soak` handed out a clean bill of health to a machine that had not limited
+/// anything for six weeks: "nothing to report — the gate moved when it should",
+/// on hardware with no gate at all.
+func runSoakLimitingTests() {
+    test("a window where nothing could be limited is not a healthy window") {
+        let records = [
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "no charge-gate key on this machine matched its expected description."
+                    + " Nothing here can limit charging, and nothing will be written."
+            ),
+        ]
+        let analysis = SoakAnalysis.analyse(records)
+        expectTrue(analysis.limitingUnavailable)
+        expectFalse(analysis.isHealthy, "no gate means no verdict about the gate")
+        expectTrue(
+            analysis.concerns.contains { $0.severity == .serious },
+            "and it is serious: the battery is unprotected"
+        )
+    }
+
+    test("the gate figures stay quiet about a window with no gate") {
+        // Zero movements used to read as "it moved when it should". The concern
+        // has to come first so the zeros are never the whole story.
+        let records = [
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "no charge-gate key on this machine"
+            ),
+        ]
+        let analysis = SoakAnalysis.analyse(records)
+        expectEqual(analysis.gateClosures, 0)
+        expectEqual(analysis.gateOpens, 0)
+        expectFalse(analysis.concerns.isEmpty, "zeros must not be reported as calm")
+    }
+
+    test("an ordinary window is still healthy") {
+        let records = [
+            DaemonLogRecord(timestamp: Date(), category: "Gate", message: "gate verified closed"),
+            DaemonLogRecord(timestamp: Date(), category: "SMC", message: "SMC write CHTE: 00000000 -> 01000000"),
+        ]
+        let analysis = SoakAnalysis.analyse(records)
+        expectFalse(analysis.limitingUnavailable)
+        expectTrue(analysis.isHealthy)
+    }
+}
