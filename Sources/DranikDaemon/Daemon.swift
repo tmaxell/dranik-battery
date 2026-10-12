@@ -195,8 +195,18 @@ public final class Daemon {
             applyConfig: { [weak self] newConfig in
                 guard let self else { return }
                 self.queue.async {
+                    // Kept whatever the mode: the configuration is what the
+                    // person asked for, and it should survive a machine that
+                    // cannot honour it today.
                     self.config = newConfig
                     try? ConfigStore.save(newConfig, to: self.configPath)
+                    guard self.mode == .limiting else {
+                        // Nothing to decide. Republish so the new limits show
+                        // and the waiting client is answered, but the gate goes
+                        // on saying what is true: there isn't one.
+                        self.publishReport()
+                        return
+                    }
                     self.evaluate(trigger: "limit changed")
                 }
             },
@@ -208,6 +218,10 @@ public final class Daemon {
                         self.log.notice("config: \(problem, privacy: .public)")
                     }
                     self.config = loaded.config
+                    guard self.mode == .limiting else {
+                        self.publishReport()
+                        return
+                    }
                     self.evaluate(trigger: "config reloaded")
                 }
             },

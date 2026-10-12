@@ -74,9 +74,10 @@ public final class GateActuator {
         return nil
     }
 
-    /// Moves the gate. Returns false if any write failed.
+    /// Moves the gate. Returns false if any write failed — or if there was
+    /// nothing to write to, which is not the same as succeeding.
     @discardableResult
-    func apply(_ position: GatePosition, reason: String) -> Bool {
+    public func apply(_ position: GatePosition, reason: String) -> Bool {
         if position == .closed && !isTrusted {
             // Permanent for the life of the process, so say it once rather than
             // on every percentage change. `dranik daemon` reports it standing.
@@ -84,6 +85,19 @@ public final class GateActuator {
                 hasLoggedDistrust = true
                 log.error("refusing to close the gate: verification failed earlier")
             }
+            return false
+        }
+
+        // Nothing to write to is not a write that worked. Without this the loop
+        // below runs zero times and reports success, and the caller goes on to
+        // believe the gate reached the position it asked for — on hardware that
+        // has no gate. Observed 2026-10-13: a limit change turned "gate unknown"
+        // into "gate closed" on a machine whose firmware had removed the key.
+        guard !specs.isEmpty else {
+            log.error("""
+            asked to set the gate \(position.rawValue, privacy: .public) \
+            (\(reason, privacy: .public)) with no keys to write to
+            """)
             return false
         }
 
