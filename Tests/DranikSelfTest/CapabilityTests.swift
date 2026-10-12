@@ -1,3 +1,4 @@
+import DranikCore
 import DranikSMC
 import Foundation
 
@@ -101,5 +102,37 @@ func runLiveSMCTests() {
         let reading = try expectNotNil(try smc.read(SMCKey("BUIC")!))
         let percentage = try expectNotNil(reading.value.doubleValue)
         expectInRange(percentage, 0...100)
+    }
+}
+
+/// The daemon spent five hours restarting every ten seconds because a firmware
+/// update removed its charge-gate key and the only answer it had was to die.
+func runDaemonModeTests() {
+    test("a recognised gate means limiting") {
+        expectEqual(DaemonMode.forGate(isSupported: true), .limiting)
+    }
+
+    test("no recognised gate means observing, not exiting") {
+        expectEqual(DaemonMode.forGate(isSupported: false), .observing)
+    }
+
+    test("observing never writes to the SMC") {
+        // Principles III and VI. A mode that recognised nothing has nothing it
+        // is entitled to write.
+        expectFalse(DaemonMode.observing.mayWriteToSMC)
+        expectTrue(DaemonMode.limiting.mayWriteToSMC)
+    }
+
+    test("observing runs no watchdog, because the watchdog would restore the loop") {
+        // Not a preference. With no decisions being made, the watchdog's stall
+        // detector fires after 120 awake seconds and exits non-zero, which is
+        // precisely the restart loop this change removes.
+        expectFalse(DaemonMode.observing.runsWatchdog)
+        expectTrue(DaemonMode.limiting.runsWatchdog)
+    }
+
+    test("observing runs no safety net") {
+        expectFalse(DaemonMode.observing.runsSafetyNet)
+        expectTrue(DaemonMode.limiting.runsSafetyNet)
     }
 }
