@@ -49,15 +49,31 @@ func runLiveSMCTests() {
         }
     }
 
-    test("a charge gate is detected") {
+    test("a gate is detected, or this machine genuinely has none") {
+        // This asserted that a gate was always found, which held until a
+        // firmware update took CHTE off the target machine on 2026-10-12 and
+        // turned a hardware fact into a red suite. The assertion worth keeping
+        // is narrower: whatever gate-shaped key is physically here must be
+        // recognised. A machine with none is a fact; a machine with one we
+        // failed to match is a defect.
         let smc = try connect()
         defer { smc.close() }
 
         let capabilities = try Capabilities.detect(using: smc)
-        expectTrue(
-            capabilities.chargeGate.isSupported,
-            "no charge-control key matched its expected metadata on this machine"
-        )
+        if capabilities.chargeGate.isSupported { return }
+
+        let candidates = ["CHTE", "CH0B", "CH0C"]
+        let present = candidates.filter { name in
+            guard let key = SMCKey(name) else { return false }
+            return ((try? smc.keyInfo(key)) ?? nil) != nil
+        }
+        guard present.isEmpty else {
+            return expectTrue(false, """
+            \(present.joined(separator: ", ")) present on this machine but no spec matched — \
+            that is detection drifting, not hardware changing
+            """)
+        }
+        try skip("no gate-shaped key exists here (\(candidates.joined(separator: ", ")) all absent)")
     }
 
     test("gate keys are readable and carry the writable attribute") {
