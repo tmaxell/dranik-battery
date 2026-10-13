@@ -64,16 +64,36 @@ enum ControlCommands {
     }
 
     private static func render(_ report: DaemonReport) -> String {
+        let byFirmware = report.heldBy == DaemonReport.HeldBy.firmware
         var lines = [
             row("Limit", "\(report.lowerLimit)–\(report.upperLimit) %"),
-            row("Gate", report.gate),
+            row("Held by", describeHolder(report.heldBy)),
+            // Two different things wear the same row. On the gate path the
+            // position of our own key is the interesting fact; on the firmware
+            // path we have no key, and what matters is whether the charger is
+            // currently being held off.
+            byFirmware
+                ? row("Charging", describeCharging(report.gate))
+                : row("Gate", report.gate),
             row("Reason", report.reason),
             row("Charger says", report.chargerReason ?? "-"),
-            row("Sleep policy", report.sleepPolicy),
-            row("Thermal cutoff", String(format: "%.0f °C", report.thermalCutoff)),
         ]
-        if report.preventIdleSleepWhileCharging {
+        if !byFirmware {
+            // Both of these are the gate path's machinery. Printing them under
+            // firmware control would promise behaviour that is not there.
+            lines.append(row("Sleep policy", report.sleepPolicy))
+            lines.append(row("Thermal cutoff", String(format: "%.0f °C", report.thermalCutoff)))
+        }
+        if report.preventIdleSleepWhileCharging && !byFirmware {
             lines.append(row("Idle sleep", "held off while charging"))
+        }
+        if byFirmware {
+            lines.append("")
+            lines.append("  The firmware holds the corridor, so it holds it while the Mac is")
+            lines.append("  asleep too: a lidded laptop on a charger stops at the limit, and")
+            lines.append("  `sleepPolicy` no longer applies.")
+            lines.append("  The thermal cutoff does not apply on this path yet — overheating")
+            lines.append("  is left to the firmware's own protection.")
         }
         if report.upperLimit >= 100 {
             lines.append(row("", "limiting is off — charging is unmanaged"))
@@ -82,7 +102,7 @@ enum ControlCommands {
             // Otherwise identical on screen to a gate that is open on purpose,
             // which is the one reading that must not be left available.
             lines.append("")
-            lines.append("  NOTE: this Mac has no charge gate this build recognises.")
+            lines.append("  NOTE: this Mac offers nothing this build can limit charging with.")
             lines.append("  The daemon runs and reports, but it is limiting nothing.")
         }
         // The charger reporting something this project cannot name means
@@ -113,6 +133,25 @@ enum ControlCommands {
             lines.append("  Restart it to match: sudo launchctl kickstart -k system/com.dranik.battery")
         }
         return lines.joined(separator: "\n")
+    }
+
+    private static func describeHolder(_ heldBy: String) -> String {
+        switch heldBy {
+        case DaemonReport.HeldBy.firmware:
+            return "the firmware — survives sleep, restarts and crashes"
+        case DaemonReport.HeldBy.daemon:
+            return "this daemon — only while it is running"
+        default:
+            return "nothing"
+        }
+    }
+
+    private static func describeCharging(_ gate: String) -> String {
+        switch gate {
+        case "closed": return "held off"
+        case "open": return "permitted"
+        default: return gate
+        }
     }
 
     private static func row(_ label: String, _ value: String) -> String {

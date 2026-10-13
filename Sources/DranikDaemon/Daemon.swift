@@ -30,6 +30,9 @@ public final class Daemon {
     /// found. See `DaemonMode`.
     private let mode: DaemonMode
     private let actuator: GateActuator
+    /// Present only when the firmware offers a corridor. Nil on the gate path,
+    /// which is what keeps the two from ever both writing.
+    private let firmwareActuator: FirmwareLimitActuator?
     private let watchdog: Watchdog
     private let dryRun: Bool
     private let statePath: String
@@ -60,7 +63,10 @@ public final class Daemon {
     ) {
         self.smc = smc
         self.capabilities = capabilities
-        self.mode = DaemonMode.forGate(isSupported: capabilities.chargeGate.isSupported)
+        self.mode = DaemonMode.forHardware(
+            firmwareLimitIsSupported: capabilities.firmwareLimit.isSupported,
+            gateIsSupported: capabilities.chargeGate.isSupported
+        )
         self.config = config
         self.dryRun = dryRun
         self.statePath = statePath
@@ -69,14 +75,19 @@ public final class Daemon {
         self.actuator = GateActuator(
             smc: smc, specs: capabilities.chargeGate.specs, queue: queue, dryRun: dryRun
         )
+        self.firmwareActuator = capabilities.firmwareLimit.spec.map {
+            FirmwareLimitActuator(smc: smc, spec: $0, dryRun: dryRun)
+        }
         self.watchdog = Watchdog(specs: capabilities.chargeGate.specs, dryRun: dryRun)
     }
 
     // MARK: - Lifecycle
 
     public func run() -> Never {
-        guard mode == .limiting else {
-            runObserving()
+        switch mode {
+        case .firmwareLimiting: runFirmwareLimiting()
+        case .observing: runObserving()
+        case .limiting: break
         }
 
         let gateNames = capabilities.chargeGate.keys.map(\.description).joined(separator: "+")
@@ -188,6 +199,161 @@ public final class Daemon {
         }
     }
 
+    /// Runs on a machine whose firmware will hold the corridor itself.
+    ///
+    /// Shorter than the gate path by everything the gate needed: no hysteresis to
+    /// run, no watchdog, no sleep policy, no trust to lose. The corridor is state
+    /// the hardware keeps, so the work is to set it and then to notice if it
+    /// stops saying what was asked for.
+    ///
+    /// The sleep handlers are answered and otherwise ignored on purpose. The
+    /// whole reason `sleepPolicy` exists is that the gate's position is whatever
+    /// the daemon left behind; a firmware corridor is enforced while the machine
+    /// sleeps, so there is nothing to decide before sleeping.
+    private func runFirmwareLimiting() -> Never {
+        let keys = capabilities.firmwareLimit.keys.map(\.description).joined(separator: "+")
+        if dryRun {
+            print("""
+
+            ┌─────────────────────────────────────────────────────────────┐
+            │  DRY RUN — nothing is written to the SMC.                   │
+            │  The firmware corridor is read but never set. The battery   │
+            │  will charge past the limit; that is expected.              │
+            │  To make it act, install it:  make install                  │
+            └─────────────────────────────────────────────────────────────┘
+
+            limit \(config.lowerLimit)–\(config.upperLimit)%, firmware corridor \(keys)
+
+            """)
+            fflush(stdout)
+        }
+
+        installSignalHandlers()
+        queue.sync { evaluateFirmware(trigger: "startup") }
+
+        do {
+            let monitor = PowerEventMonitor(queue: queue) { [weak self] event in
+                guard let self else { return }
+                if case .canSleep(let acknowledgement) = event { acknowledgement.allow() }
+                if case .willSleep(let acknowledgement) = event { acknowledgement.allow() }
+                if case .didWake = event {
+                    // Not to re-decide — the firmware held the corridor all
+                    // night — but because a firmware update applies across a
+                    // restart and this is the cheapest place to find out.
+                    self.evaluateFirmware(trigger: "woke up")
+                    return
+                }
+                // Charge and power-source changes do not change the corridor.
+                // They change what the report should say about it, which is why
+                // this is a republish rather than a decision.
+                self.evaluateFirmware(trigger: "power event")
+            }
+            try monitor.start()
+            self.monitor = monitor
+        } catch {
+            // Not fatal, and notably less serious than on the gate path: the
+            // corridor goes on being enforced by the firmware with nobody
+            // watching. What is lost is a fresh readout.
+            log.error("""
+            could not subscribe to power events: \
+            \(String(describing: error), privacy: .public) — the report will not refresh
+            """)
+        }
+
+        startFirmwareSafetyNet()
+        startControlServer()
+
+        log.notice("""
+        dranikd running\(self.dryRun ? " (DRY RUN — no SMC writes)" : "", privacy: .public), \
+        limit \(self.config.lowerLimit, privacy: .public)–\
+        \(self.config.upperLimit, privacy: .public)%, \
+        held by the firmware via \(keys, privacy: .public)
+        """)
+
+        withExtendedLifetime(signalSources) {
+            dispatchMain()
+        }
+    }
+
+    /// Re-reads the corridor on a long interval.
+    ///
+    /// Distinct from the gate's safety net, which exists because a decision may
+    /// have been missed. Nothing here needs re-deciding; what this catches is
+    /// the corridor being changed by something that is not us.
+    private func startFirmwareSafetyNet() {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(
+            deadline: .now() + Self.safetyNetInterval, repeating: Self.safetyNetInterval
+        )
+        timer.setEventHandler { [weak self] in
+            self?.evaluateFirmware(trigger: "safety net")
+        }
+        timer.resume()
+        safetyNet = timer
+    }
+
+    /// Brings the firmware's corridor to what the configuration asks for, and
+    /// records what it found doing so.
+    private func evaluateFirmware(trigger: String) {
+        guard let firmwareActuator else { return }
+
+        let snapshot = try? PowerReader.snapshot()
+        var decision = FirmwareLimitPolicy.decide(
+            config: config, observed: firmwareActuator.read(), percentage: snapshot?.percentage
+        )
+
+        if decision.requiresWrite {
+            log.notice("""
+            \(decision.reason.description, privacy: .public) \
+            (\(trigger, privacy: .public))
+            """)
+            if firmwareActuator.apply(decision.plan, reason: trigger) {
+                // Decide again from what the firmware now reports, so the report
+                // describes the settled corridor rather than the repair. The
+                // firmware is the authority on its own state; a write that
+                // returned success is not.
+                decision = FirmwareLimitPolicy.decide(
+                    config: config,
+                    observed: firmwareActuator.read(),
+                    percentage: snapshot?.percentage
+                )
+            } else {
+                decision = FirmwareLimitDecision(
+                    plan: decision.plan, requiresWrite: false, reason: .writeFailed
+                )
+            }
+        }
+
+        if decision.reason.code != lastReasonCode {
+            if decision.reason.isFault {
+                log.fault("\(decision.reason.description, privacy: .public)")
+            } else {
+                log.notice("""
+                \(decision.reason.description, privacy: .public) \
+                (\(trigger, privacy: .public))
+                """)
+            }
+        }
+        lastReason = decision.reason.description
+        lastReasonCode = decision.reason.code
+
+        // "Closed" here means what it means everywhere else in the report: the
+        // charger says charging is being held off. Taken from the hardware's own
+        // flag rather than inferred from the corridor, for the same reason every
+        // gate write is confirmed that way.
+        if decision.plan.isLimiting {
+            if let inhibited = snapshot?.notChargingReason?.contains(.inhibited) {
+                controllerState.gate = inhibited ? .closed : .open
+            } else {
+                controllerState.gate = nil
+            }
+        } else {
+            controllerState.gate = .open
+        }
+
+        publishReport()
+    }
+
     private func startControlServer() {
         let server = ControlServer(
             path: socketPath,
@@ -200,14 +366,17 @@ public final class Daemon {
                     // cannot honour it today.
                     self.config = newConfig
                     try? ConfigStore.save(newConfig, to: self.configPath)
-                    guard self.mode == .limiting else {
+                    switch self.mode {
+                    case .limiting:
+                        self.evaluate(trigger: "limit changed")
+                    case .firmwareLimiting:
+                        self.evaluateFirmware(trigger: "limit changed")
+                    case .observing:
                         // Nothing to decide. Republish so the new limits show
                         // and the waiting client is answered, but the gate goes
                         // on saying what is true: there isn't one.
                         self.publishReport()
-                        return
                     }
-                    self.evaluate(trigger: "limit changed")
                 }
             },
             reloadConfig: { [weak self] in
@@ -218,16 +387,26 @@ public final class Daemon {
                         self.log.notice("config: \(problem, privacy: .public)")
                     }
                     self.config = loaded.config
-                    guard self.mode == .limiting else {
+                    switch self.mode {
+                    case .limiting:
+                        self.evaluate(trigger: "config reloaded")
+                    case .firmwareLimiting:
+                        self.evaluateFirmware(trigger: "config reloaded")
+                    case .observing:
                         self.publishReport()
-                        return
                     }
-                    self.evaluate(trigger: "config reloaded")
                 }
             },
             restoreTrust: { [weak self] in
                 guard let self else { return }
                 self.queue.async {
+                    // On the firmware path there is no trust to restore, but the
+                    // intent behind the command — "make the limit work again" —
+                    // still maps onto something: put the corridor back.
+                    if self.mode == .firmwareLimiting {
+                        self.evaluateFirmware(trigger: "asked to re-apply")
+                        return
+                    }
                     guard self.actuator.restoreTrust() else { return }
                     self.evaluate(trigger: "gate re-armed")
                 }
@@ -246,6 +425,14 @@ public final class Daemon {
         }
     }
 
+    private var heldBy: String {
+        switch mode {
+        case .firmwareLimiting: return DaemonReport.HeldBy.firmware
+        case .limiting: return DaemonReport.HeldBy.daemon
+        case .observing: return DaemonReport.HeldBy.nothing
+        }
+    }
+
     private func publishReport() {
         let chargerReason = (try? PowerReader.snapshot())?.notChargingReason
         control?.publish(
@@ -259,8 +446,9 @@ public final class Daemon {
                 gateIsTrusted: actuator.isTrusted,
                 chargerReason: chargerReason.map(String.init(describing:)),
                 reasonCode: lastReasonCode,
-                limitingIsSupported: capabilities.chargeGate.isSupported,
+                limitingIsSupported: mode.mayWriteToSMC,
                 preventIdleSleepWhileCharging: config.preventIdleSleepWhileCharging,
+                heldBy: heldBy,
                 decidedAt: Date()
             ),
             config: config
@@ -274,10 +462,24 @@ public final class Daemon {
         safetyNet?.cancel()
         monitor?.stop()
 
-        guard mode == .limiting else {
-            // Nothing was ever written, so there is nothing to put back. Saying
-            // "opening the gate" here would be a lie in the log.
-            log.notice("shutting down (\(reason, privacy: .public)) — nothing was being limited")
+        guard mode.restoresOnExit else {
+            if mode == .firmwareLimiting {
+                // Deliberately left alone. The corridor is the limit working,
+                // and the firmware goes on enforcing it with nothing running —
+                // which is the point. Clearing it here would mean charge
+                // limiting lapsed on every restart, and `make install` restarts
+                // the daemon. Uninstalling clears it.
+                log.notice("""
+                shutting down (\(reason, privacy: .public)) — \
+                the firmware keeps the corridor
+                """)
+            } else {
+                // Nothing was ever written, so there is nothing to put back.
+                // Saying "opening the gate" here would be a lie in the log.
+                log.notice("""
+                shutting down (\(reason, privacy: .public)) — nothing was being limited
+                """)
+            }
             smc.close()
             exit(code)
         }

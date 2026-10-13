@@ -81,6 +81,12 @@ public struct MenuBarSummary: Equatable, Sendable {
     public let needsRearming: Bool
     public let upperLimit: Int
     public let lowerLimit: Int
+    /// True when the firmware holds the corridor rather than the daemon.
+    ///
+    /// The interface needs it for one thing: the sleep caveat. "A lidded Mac on a
+    /// charger will not charge overnight" is the most surprising thing about this
+    /// product on the gate path, and simply untrue on the firmware path.
+    public let limitHeldByFirmware: Bool
 
     public init(
         headline: String,
@@ -91,7 +97,8 @@ public struct MenuBarSummary: Equatable, Sendable {
         isLimiting: Bool,
         needsRearming: Bool = false,
         upperLimit: Int,
-        lowerLimit: Int
+        lowerLimit: Int,
+        limitHeldByFirmware: Bool = false
     ) {
         self.headline = headline
         self.detail = detail
@@ -102,6 +109,7 @@ public struct MenuBarSummary: Equatable, Sendable {
         self.needsRearming = needsRearming
         self.upperLimit = upperLimit
         self.lowerLimit = lowerLimit
+        self.limitHeldByFirmware = limitHeldByFirmware
     }
 }
 
@@ -145,6 +153,7 @@ public enum MenuBarPresentation {
         _ report: DaemonReport, _ battery: BatteryFacts?
     ) -> MenuBarSummary {
         let isLimiting = report.upperLimit < 100
+        let byFirmware = report.heldBy == DaemonReport.HeldBy.firmware
 
         func summary(
             _ headline: String,
@@ -163,7 +172,8 @@ public enum MenuBarPresentation {
                 isLimiting: isLimiting,
                 needsRearming: rearm,
                 upperLimit: report.upperLimit,
-                lowerLimit: report.lowerLimit
+                lowerLimit: report.lowerLimit,
+                limitHeldByFirmware: byFirmware
             )
         }
 
@@ -180,10 +190,30 @@ public enum MenuBarPresentation {
 
         if !report.limitingIsSupported {
             return summary(
-                "This Mac has no charge gate",
+                "This Mac cannot be limited",
                 "The daemon is running, but there is nothing here it can limit.",
                 icon: .warning, tone: .caution, controls: false
             )
+        }
+
+        // The firmware path's two ways of failing. Both mean the corridor is not
+        // being enforced, so both rank with the gate losing trust rather than
+        // with anything about charging.
+        switch report.reasonCode {
+        case "firmwareWriteFailed":
+            return summary(
+                "Not limiting — the firmware refused the limit",
+                "Charging is not being held back.",
+                icon: .warning, tone: .alarm
+            )
+        case "firmwareCorridorUnreadable":
+            return summary(
+                "Not limiting — the firmware is not answering",
+                "The charge limit cannot be read, so it cannot be trusted.",
+                icon: .warning, tone: .caution
+            )
+        default:
+            break
         }
 
         if report.reasonCode == "staleReading" {
@@ -226,6 +256,15 @@ public enum MenuBarPresentation {
                 "Charging — below the \(ChargeConfig.emergencyFloor) % floor",
                 "The limit does not apply this low.",
                 icon: .chargingToLimit
+            )
+        case "firmwareAboveCorridor":
+            // Its own state because the machine visibly behaves unlike any of
+            // the others: plugged in and discharging. Without a sentence for it,
+            // "Holding at 80 %" at 100 % reads as a bug.
+            return summary(
+                "Coming down to \(report.upperLimit) %",
+                "Above the limit, so the Mac runs on battery until it gets there.",
+                icon: .holding
             )
         default:
             break

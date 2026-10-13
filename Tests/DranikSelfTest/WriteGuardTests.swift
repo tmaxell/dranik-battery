@@ -14,17 +14,22 @@ func runWriteGuardTests() {
         }
     }
 
-    /// The gate spec this machine actually has.
+    /// A charge-control key this machine has that is present *and* writable.
     ///
-    /// Two of the cases below need a key that is present *and* writable, and
-    /// one of them reaches the kernel. Since 2026-10-12 this machine has no
-    /// such key, so they skip rather than fail: the guard they check is not
-    /// broken, there is simply nothing here to guard.
-    func gateSpec(_ smc: SMCConnection) throws -> SMCKeySpec {
-        guard let spec = try Capabilities.detect(using: smc).chargeGate.specs.first else {
-            try skip("no charge gate on this machine — nothing writable to exercise the guard on")
+    /// Two of the cases below need one, and one of them reaches the kernel. Which
+    /// mechanism it comes from does not matter to the guard under test, and
+    /// taking either is what keeps these covered: when the gate went away on
+    /// 2026-10-12 they skipped for months, and a guard nothing exercises is a
+    /// guard nobody would notice breaking.
+    func writableChargeKey(_ smc: SMCConnection) throws -> (key: SMCKey, info: SMCKeyInfo) {
+        let capabilities = try Capabilities.detect(using: smc)
+        if let spec = capabilities.chargeGate.specs.first {
+            return (spec.key, spec.expectedInfo)
         }
-        return spec
+        if let spec = capabilities.firmwareLimit.spec {
+            return (spec.activation, spec.activationInfo)
+        }
+        try skip("nothing writable on this machine to exercise the guard on")
     }
 
     test("write refuses a key this machine does not have") {
@@ -95,10 +100,12 @@ func runWriteGuardTests() {
 
         // Needs a key that is present and writable: the length check sits after
         // the writability check, so a read-only key would throw the wrong error.
-        let spec = try gateSpec(smc)
-        let info = try expectNotNil((try? smc.keyInfo(spec.key)) ?? nil)
+        let target = try writableChargeKey(smc)
+        let info = try expectNotNil((try? smc.keyInfo(target.key)) ?? nil)
         do {
-            try smc.write(spec.key, bytes: [0x00, 0x00, 0x00, 0x00, 0x00], matching: info)
+            // Five bytes, which is the wrong length for every charge-control key
+            // on any of these mechanisms.
+            try smc.write(target.key, bytes: [0x00, 0x00, 0x00, 0x00, 0x00], matching: info)
             expectTrue(false, "expected the write to be refused")
         } catch SMCError.payloadSizeMismatch {
             // Expected.
@@ -115,18 +122,18 @@ func runWriteGuardTests() {
             try skip("running as root — this test asserts the unprivileged path")
         }
 
-        let spec = try gateSpec(smc)
-        let before = try expectNotNil((try? smc.read(spec.key)) ?? nil)
+        let target = try writableChargeKey(smc)
+        let before = try expectNotNil((try? smc.read(target.key)) ?? nil)
 
         // Writes back exactly what the key already holds. That cannot change
-        // anything whatever the gate is currently set to, even if privileges
-        // were somehow granted — which matters because the daemon may well be
-        // running and holding the gate shut while this suite runs. An earlier
-        // version wrote the gate's open payload and assumed it was already
-        // there; with a limit actually being enforced, that assumption was
-        // false and the write would have lifted the limit.
+        // anything whatever it is currently set to, even if privileges were
+        // somehow granted — which matters because the daemon may well be running
+        // and enforcing a limit while this suite runs. An earlier version wrote
+        // the gate's open payload and assumed it was already there; with a limit
+        // actually being enforced, that assumption was false and the write would
+        // have lifted the limit.
         do {
-            try smc.write(spec.key, bytes: before.bytes, matching: spec.expectedInfo)
+            try smc.write(target.key, bytes: before.bytes, matching: target.info)
             expectTrue(false, "an unprivileged write should not succeed")
         } catch SMCError.ioKit {
             // Expected: kIOReturnNotPrivileged.
@@ -134,7 +141,7 @@ func runWriteGuardTests() {
             expectTrue(false, "wrong error: \(error)")
         }
 
-        let after = try expectNotNil((try? smc.read(spec.key)) ?? nil)
+        let after = try expectNotNil((try? smc.read(target.key)) ?? nil)
         expectEqual(after.bytes, before.bytes, "the refused write must not have changed anything")
     }
 

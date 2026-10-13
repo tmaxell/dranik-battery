@@ -6,6 +6,10 @@ runLayoutTests()
 runDecodingTests()
 runKeySpecTests()
 runDaemonModeTests()
+runFirmwareModeTests()
+runFirmwareLimitEncodingTests()
+runFirmwareLimitPlanTests()
+runFirmwareLimitPolicyTests()
 runBatterySnapshotTests()
 runNotChargingReasonTests()
 runChargeConfigTests()
@@ -45,6 +49,7 @@ if CommandLine.arguments.contains("--skip-hardware") {
 } else {
     runLiveSMCTests()
     runLivePowerReaderTests()
+    runLiveFirmwareLimitTests()
     runWriteGuardTests()
 }
 

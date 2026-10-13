@@ -71,11 +71,14 @@ func runMenuBarPresentationTests() {
         expectTrue(summary.headline.contains("gate"), summary.headline)
     }
 
-    test("hardware with no charge gate says so and offers no controls") {
+    test("hardware that cannot be limited says so and offers no controls") {
         let summary = MenuBarPresentation.summary(
             link: .connected(daemonReport(gate: "open", supported: false)), battery: facts()
         )
-        expectEqual(summary.headline, "This Mac has no charge gate")
+        // Not "no charge gate" any more: a gate is one of two mechanisms now,
+        // and naming the missing one would send someone looking for the wrong
+        // thing on a machine that has neither.
+        expectEqual(summary.headline, "This Mac cannot be limited")
         expectFalse(summary.controlsAreEnabled)
         expectEqual(summary.tone, .caution)
     }
