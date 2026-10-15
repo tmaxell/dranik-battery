@@ -16,6 +16,13 @@ struct StatusReport {
     /// Read here rather than asked of the daemon for the same reason as the gate
     /// readings: this command answers from the hardware.
     let firmwareLimit: FirmwareLimitState?
+    /// The battery gauge's own state of charge, from `BRSC`.
+    ///
+    /// Worth a line of its own because it is the number the firmware enforces
+    /// its corridor against, and it is not the number macOS displays: 79 against
+    /// 83, measured 2026-10-15. Without it, a Mac told to stop at 80 and sitting
+    /// at 83 has no visible explanation.
+    let gaugeCharge: Int?
     let telemetry: [(label: String, value: String)]
 
     static func gather() throws -> StatusReport {
@@ -25,6 +32,7 @@ struct StatusReport {
         var capabilitiesError: String?
         var gateReadings: [(SMCKey, String)] = []
         var firmwareLimit: FirmwareLimitState?
+        var gaugeCharge: Int?
         var telemetry: [(String, String)] = []
 
         do {
@@ -38,6 +46,10 @@ struct StatusReport {
                 if let reading = try smc.read(key) {
                     gateReadings.append((key, reading.value.description))
                 }
+            }
+
+            if let brsc = SMCKey("BRSC"), let reading = try smc.read(brsc) {
+                gaugeCharge = reading.value.doubleValue.map { Int($0) }
             }
 
             if let spec = detected.firmwareLimit.spec,
@@ -66,6 +78,7 @@ struct StatusReport {
             capabilitiesError: capabilitiesError,
             gateReadings: gateReadings,
             firmwareLimit: firmwareLimit,
+            gaugeCharge: gaugeCharge,
             telemetry: telemetry
         )
     }
@@ -124,6 +137,15 @@ extension StatusReport {
         } else if let capabilities {
             lines.append(row("Charge gate", describe(capabilities.chargeGate)))
             lines.append(row("Firmware limit", describeFirmwareLimit(capabilities)))
+            if capabilities.firmwareLimit.isSupported, let gaugeCharge {
+                // The limit is enforced against this figure, not against the one
+                // at the top of this report.
+                var line = "\(gaugeCharge) % (what the corridor is measured against)"
+                if gaugeCharge != battery.percentage {
+                    line += " — macOS shows \(battery.percentage) %"
+                }
+                lines.append(row("Gauge charge", line))
+            }
             lines.append(row("Hardware 80 % limit", capabilities.hasHardwareChargeLimit ? "yes (CHWA)" : "no"))
             lines.append(row(
                 "Adapter control keys",

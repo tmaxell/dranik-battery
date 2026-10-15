@@ -104,7 +104,7 @@ let scenarios = [
     Scenario(
         "a charge above the corridor, coming down on battery",
         report: report(
-            gate: "closed", reasonCode: "firmwareAboveCorridor",
+            gate: "closed", reasonCode: "firmwareComingDown",
             heldBy: DaemonReport.HeldBy.firmware
         ),
         headline: "Coming down to 80 %", icon: "holding"

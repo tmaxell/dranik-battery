@@ -298,8 +298,9 @@ public final class Daemon {
         guard let firmwareActuator else { return }
 
         let snapshot = try? PowerReader.snapshot()
+        let activity = Self.activity(from: snapshot)
         var decision = FirmwareLimitPolicy.decide(
-            config: config, observed: firmwareActuator.read(), percentage: snapshot?.percentage
+            config: config, observed: firmwareActuator.read(), activity: activity
         )
 
         if decision.requiresWrite {
@@ -315,7 +316,7 @@ public final class Daemon {
                 decision = FirmwareLimitPolicy.decide(
                     config: config,
                     observed: firmwareActuator.read(),
-                    percentage: snapshot?.percentage
+                    activity: activity
                 )
             } else {
                 decision = FirmwareLimitDecision(
@@ -337,21 +338,35 @@ public final class Daemon {
         lastReason = decision.reason.description
         lastReasonCode = decision.reason.code
 
-        // "Closed" here means what it means everywhere else in the report: the
-        // charger says charging is being held off. Taken from the hardware's own
-        // flag rather than inferred from the corridor, for the same reason every
-        // gate write is confirmed that way.
-        if decision.plan.isLimiting {
-            if let inhibited = snapshot?.notChargingReason?.contains(.inhibited) {
-                controllerState.gate = inhibited ? .closed : .open
-            } else {
-                controllerState.gate = nil
-            }
+        // "Closed" here means what it means everywhere else in the report:
+        // charging is being held off. Derived from the same hardware reading as
+        // the reason, so the two lines cannot contradict each other.
+        if snapshot == nil {
+            controllerState.gate = nil
         } else {
-            controllerState.gate = .open
+            switch activity {
+            case .heldOff, .comingDown: controllerState.gate = .closed
+            case .charging, .onBattery, .indeterminate: controllerState.gate = .open
+            }
         }
 
         publishReport()
+    }
+
+    /// Turns a battery reading into what the charger is doing.
+    ///
+    /// Kept here rather than in `DranikCore` only because `BatterySnapshot` is a
+    /// `DranikPower` type; the decision itself is `FirmwareChargeActivity.from`,
+    /// which is pure and tested.
+    private static func activity(from snapshot: BatterySnapshot?) -> FirmwareChargeActivity {
+        guard let snapshot else { return .indeterminate }
+        return FirmwareChargeActivity.from(
+            isExternalConnected: snapshot.isExternalConnected,
+            isCharging: snapshot.isCharging,
+            milliamps: snapshot.amperage,
+            isInhibited: snapshot.notChargingReason?.contains(.inhibited) == true
+                || (snapshot.chargerInhibitReason ?? 0) != 0
+        )
     }
 
     private func startControlServer() {

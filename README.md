@@ -203,6 +203,13 @@ whatever is or is not running. What it can do is outlive the software — so:
   come down to it. The interface says so, because a plugged-in Mac that is
   discharging otherwise reads as a fault.
 
+**One thing to expect.** The firmware measures the corridor against the battery
+gauge's own state of charge, and macOS displays a smoothed figure a few points
+higher — 79 against 83 on this machine. So a Mac told to stop at 80 settles at
+82–83 and stays there. This is not compensated for: the offset moves with charge
+history, so writing 77 to land on 80 would be a guess that drifts. `dranik
+status` prints both figures, and the popover says why they differ.
+
 ### The software gate
 
 The only real risk is leaving the gate shut and walking away. Against that:
@@ -287,7 +294,7 @@ the app, or 0.02 % of one core.
 
 ```bash
 make build
-make test              # 260 tests, 830 assertions
+make test              # 273 tests, 857 assertions
 make ui-drill          # the app against a daemon that misbehaves on purpose
 make ui-snapshots      # render every popover state to PNG, light and dark
 make daemon-dry-run    # the whole decision cycle, writing nothing

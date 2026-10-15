@@ -94,6 +94,9 @@ enum ControlCommands {
             lines.append("  `sleepPolicy` no longer applies.")
             lines.append("  The thermal cutoff does not apply on this path yet — overheating")
             lines.append("  is left to the firmware's own protection.")
+            lines.append("  The firmware measures against the battery gauge's own charge, which")
+            lines.append("  reads a little lower than macOS shows — so charging settles a point")
+            lines.append("  or two above the limit. `dranik status` prints both figures.")
         }
         if report.upperLimit >= 100 {
             lines.append(row("", "limiting is off — charging is unmanaged"))

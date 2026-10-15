@@ -8,13 +8,14 @@ private func daemonReport(
     reasonCode: String = "reachedUpper",
     trusted: Bool = true,
     supported: Bool = true,
-    chargerReason: String? = nil
+    chargerReason: String? = nil,
+    heldBy: String = DaemonReport.HeldBy.daemon
 ) -> DaemonReport {
     DaemonReport(
         upperLimit: upper, lowerLimit: lower, thermalCutoff: 40,
         sleepPolicy: "holdLimit", gate: gate, reason: "because",
         gateIsTrusted: trusted, chargerReason: chargerReason, reasonCode: reasonCode,
-        limitingIsSupported: supported, decidedAt: Date()
+        limitingIsSupported: supported, heldBy: heldBy, decidedAt: Date()
     )
 }
 
@@ -81,6 +82,55 @@ func runMenuBarPresentationTests() {
         expectEqual(summary.headline, "This Mac cannot be limited")
         expectFalse(summary.controlsAreEnabled)
         expectEqual(summary.tone, .caution)
+    }
+
+    test("a charge sitting above the firmware's limit is explained, not left to look wrong") {
+        // The real reading from 2026-10-15: told to stop at 80, holding, and
+        // showing 83, because the firmware counts against the gauge's 79. Both
+        // numbers are in the same popover, so the gap needs a sentence.
+        let summary = MenuBarPresentation.summary(
+            link: .connected(daemonReport(
+                gate: "closed", heldBy: DaemonReport.HeldBy.firmware
+            )),
+            battery: facts(percentage: 83)
+        )
+        expectEqual(summary.headline, "Holding at 80 %")
+        expectEqual(summary.tone, .normal, "a working limit is not a warning")
+        expectTrue(summary.detail?.contains("counts a little lower") == true, summary.detail ?? "-")
+    }
+
+    test("no scale caveat when the numbers agree") {
+        // Saying it when there is nothing to explain is how an explanation turns
+        // into noise.
+        let summary = MenuBarPresentation.summary(
+            link: .connected(daemonReport(
+                gate: "closed", heldBy: DaemonReport.HeldBy.firmware
+            )),
+            battery: facts(percentage: 80)
+        )
+        expectNil(summary.detail)
+    }
+
+    test("no scale caveat on the software gate, which counts the way macOS does") {
+        let summary = MenuBarPresentation.summary(
+            link: .connected(daemonReport(gate: "closed")),
+            battery: facts(percentage: 83)
+        )
+        expectNil(summary.detail)
+    }
+
+    test("the firmware path drops the overnight caveat the gate path needs") {
+        let byFirmware = MenuBarPresentation.summary(
+            link: .connected(daemonReport(
+                gate: "closed", heldBy: DaemonReport.HeldBy.firmware
+            )),
+            battery: facts()
+        )
+        expectTrue(byFirmware.limitHeldByFirmware)
+        let byDaemon = MenuBarPresentation.summary(
+            link: .connected(daemonReport(gate: "closed")), battery: facts()
+        )
+        expectFalse(byDaemon.limitHeldByFirmware)
     }
 
     test("a stale reading is reported as not limiting, not as calm") {

@@ -49,30 +49,144 @@ func runFirmwareLimitPlanTests() {
     }
 }
 
+func runFirmwareActivityTests() {
+    test("current into the battery is charging") {
+        expectEqual(
+            FirmwareChargeActivity.from(
+                isExternalConnected: true, isCharging: true, milliamps: 1800, isInhibited: false
+            ),
+            .charging
+        )
+        // `isCharging` can lag the current, so either is enough.
+        expectEqual(
+            FirmwareChargeActivity.from(
+                isExternalConnected: true, isCharging: false, milliamps: 1800, isInhibited: false
+            ),
+            .charging
+        )
+    }
+
+    test("inhibited and still is sitting at the limit") {
+        expectEqual(
+            FirmwareChargeActivity.from(
+                isExternalConnected: true, isCharging: false, milliamps: 0, isInhibited: true
+            ),
+            .heldOff
+        )
+    }
+
+    test("a few milliamps either way is not movement") {
+        // The battery reports housekeeping current while sitting still, and
+        // reading that as "coming down" would make a settled machine look busy.
+        for current in [-40, -1, 0, 1, 40] {
+            expectEqual(
+                FirmwareChargeActivity.from(
+                    isExternalConnected: true, isCharging: false,
+                    milliamps: current, isInhibited: true
+                ),
+                .heldOff,
+                "\(current) mA should read as still"
+            )
+        }
+    }
+
+    test("inhibited and supplying the machine is coming down to the corridor") {
+        // Measured 2026-10-13: above its corridor this firmware runs the machine
+        // off the battery rather than merely refusing to charge.
+        expectEqual(
+            FirmwareChargeActivity.from(
+                isExternalConnected: true, isCharging: false, milliamps: -698, isInhibited: true
+            ),
+            .comingDown
+        )
+    }
+
+    test("no mains outranks everything else") {
+        expectEqual(
+            FirmwareChargeActivity.from(
+                isExternalConnected: false, isCharging: false, milliamps: -1200, isInhibited: true
+            ),
+            .onBattery
+        )
+    }
+
+    test("discharging on mains without an inhibit is not blamed on the limit") {
+        // A load the adapter cannot cover looks like `comingDown` if the inhibit
+        // flag is ignored. Saying "above the limit" there would be a guess, and
+        // a wrong one.
+        expectEqual(
+            FirmwareChargeActivity.from(
+                isExternalConnected: true, isCharging: false, milliamps: -900, isInhibited: false
+            ),
+            .indeterminate
+        )
+    }
+}
+
 func runFirmwareLimitPolicyTests() {
     let config = ChargeConfig(upperLimit: 80, lowerLimit: 75)
+    let held = FirmwareLimitState(isActive: true, upper: 80, lower: 75)
 
     test("a corridor already held needs no write") {
         // The steady state, and the whole reason this path is cheap: the
         // firmware keeps the corridor between decisions, so the daemon's normal
         // behaviour is to write nothing at all.
         let decision = FirmwareLimitPolicy.decide(
-            config: config,
-            observed: FirmwareLimitState(isActive: true, upper: 80, lower: 75),
-            percentage: 78
+            config: config, observed: held, activity: .charging
         )
         expectFalse(decision.requiresWrite)
-        expectEqual(decision.reason.code, "firmwareHoldingBelow")
+        expectEqual(decision.reason.code, "firmwareChargingToLimit")
+    }
+
+    test("a settled corridor is not reported as coming down") {
+        // The defect this replaced. The firmware enforces against the battery
+        // gauge's state of charge; macOS displays a smoothed figure a few points
+        // higher — 79 against 83, measured 2026-10-15. Comparing the configured
+        // 80 against the displayed 83 produced "above the limit — running on
+        // battery until it comes down" while the current sat at 0 mA, and it
+        // would have said so for as long as the machine stayed plugged in.
+        let decision = FirmwareLimitPolicy.decide(
+            config: config, observed: held, activity: .heldOff
+        )
+        expectEqual(decision.reason.code, "reachedUpper")
+        expectFalse(decision.reason.description.contains("until it comes down"))
+    }
+
+    test("the limit's prose never quotes a charge percentage") {
+        // Because there are two of them and they disagree. Naming either one
+        // invites "but the menu bar says 83".
+        for activity in [FirmwareChargeActivity.charging, .heldOff, .comingDown,
+                         .onBattery, .indeterminate] {
+            let decision = FirmwareLimitPolicy.decide(
+                config: config, observed: held, activity: activity
+            )
+            expectFalse(
+                decision.reason.description.contains("charge "),
+                "\(activity) said: \(decision.reason.description)"
+            )
+        }
     }
 
     test("a corridor that drifted is put back") {
         let decision = FirmwareLimitPolicy.decide(
             config: config,
             observed: FirmwareLimitState(isActive: false, upper: 0, lower: 0),
-            percentage: 78
+            activity: .charging
         )
         expectTrue(decision.requiresWrite)
         expectEqual(decision.plan, .hold(lower: 75, upper: 80))
+        expectEqual(decision.reason.code, "firmwareCorridorDrifted")
+    }
+
+    test("drift is repaired before anything is said about charging") {
+        // Order matters: a corridor that is not the one asked for is not
+        // enforcing the limit, whatever the charger happens to be doing.
+        let decision = FirmwareLimitPolicy.decide(
+            config: config,
+            observed: FirmwareLimitState(isActive: true, upper: 90, lower: 85),
+            activity: .heldOff
+        )
+        expectTrue(decision.requiresWrite)
         expectEqual(decision.reason.code, "firmwareCorridorDrifted")
     }
 
@@ -80,60 +194,48 @@ func runFirmwareLimitPolicyTests() {
         // Writing blindly would be refused by the guarded path anyway, which
         // reads the descriptor first. Claiming to have fixed it would not be.
         let decision = FirmwareLimitPolicy.decide(
-            config: config, observed: nil, percentage: 78
+            config: config, observed: nil, activity: .heldOff
         )
         expectFalse(decision.requiresWrite)
         expectEqual(decision.reason.code, "firmwareCorridorUnreadable")
         expectTrue(decision.reason.isFault)
     }
 
-    test("being above the corridor is its own state, not holding at the limit") {
-        // Measured 2026-10-13: above the corridor the firmware runs the machine
-        // off the battery to bring it down. Reporting that as "holding at 80 %"
-        // while the figure says 100 % is how a working limit reads as a bug.
+    test("coming down to the corridor is its own state") {
         let decision = FirmwareLimitPolicy.decide(
-            config: config,
-            observed: FirmwareLimitState(isActive: true, upper: 80, lower: 75),
-            percentage: 100
+            config: config, observed: held, activity: .comingDown
         )
-        expectEqual(decision.reason.code, "firmwareAboveCorridor")
+        expectEqual(decision.reason.code, "firmwareComingDown")
         expectFalse(decision.reason.isFault)
         expectTrue(decision.reason.description.contains("on battery"))
     }
 
-    test("sitting exactly on the limit reads as having reached it") {
+    test("on battery, the limit says nothing about charging") {
         let decision = FirmwareLimitPolicy.decide(
-            config: config,
-            observed: FirmwareLimitState(isActive: true, upper: 80, lower: 75),
-            percentage: 80
+            config: config, observed: held, activity: .onBattery
         )
-        // Shares `reachedUpper` with the gate path on purpose: a client showing
-        // an icon for "at the limit" should not need to know which mechanism got
-        // it there.
-        expectEqual(decision.reason.code, "reachedUpper")
-    }
-
-    test("an unreadable charge does not become a charge of zero") {
-        let decision = FirmwareLimitPolicy.decide(
-            config: config,
-            observed: FirmwareLimitState(isActive: true, upper: 80, lower: 75),
-            percentage: nil
-        )
-        expectEqual(decision.reason.code, "firmwareHoldingUnknownCharge")
-        // The bug this guards against is a missing reading becoming the sentence
-        // "charge 0% is charging towards it", which reads as a flat battery.
-        expectFalse(decision.reason.description.contains("charge 0"))
-        expectTrue(decision.reason.description.contains("not readable"))
+        expectEqual(decision.reason.code, "onBattery")
+        expectFalse(decision.requiresWrite)
     }
 
     test("a limit of 100 switches the corridor off rather than widening it") {
         let decision = FirmwareLimitPolicy.decide(
             config: ChargeConfig(upperLimit: 100),
-            observed: FirmwareLimitState(isActive: true, upper: 80, lower: 75),
-            percentage: 90
+            observed: held,
+            activity: .charging
         )
         expectTrue(decision.requiresWrite)
         expectEqual(decision.plan, .off)
+    }
+
+    test("a corridor that is off and asked to be off is left alone") {
+        let decision = FirmwareLimitPolicy.decide(
+            config: ChargeConfig(upperLimit: 100),
+            observed: FirmwareLimitState(isActive: false, upper: 80, lower: 75),
+            activity: .charging
+        )
+        expectFalse(decision.requiresWrite)
+        expectEqual(decision.reason.code, "limitingDisabled")
     }
 }
 
