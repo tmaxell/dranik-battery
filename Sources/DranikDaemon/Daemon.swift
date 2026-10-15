@@ -14,6 +14,18 @@ public final class Daemon {
     /// notification that never arrives, not the primary mechanism — at a minute
     /// it would be a poor limiter on its own.
     public static let safetyNetInterval: TimeInterval = 60
+    /// How often the firmware path re-reads the corridor with nothing prompting
+    /// it.
+    ///
+    /// Ten times the gate path's interval, and the gap is the difference between
+    /// the two mechanisms. The gate needs re-deciding, so a missed event costs
+    /// enforcement. The corridor needs nothing — measured holding for 2 days and
+    /// 20 hours without being touched — and this timer exists only to notice
+    /// something *else* writing those keys. Power events, wake and config
+    /// changes already cover every moment someone is using the machine, so at a
+    /// minute this would be 1440 checks a day for an event that happened zero
+    /// times. Principle VII: a timer has to justify its own cost.
+    public static let firmwareSafetyNetInterval: TimeInterval = 600
     /// After waking, the machine reports transient nonsense for a while. Nothing
     /// is closed during this window; opening is still allowed.
     public static let postWakeSettle: TimeInterval = 30
@@ -156,6 +168,17 @@ public final class Daemon {
     /// report that the daemon is missing, which sends someone looking in the
     /// wrong place entirely.
     private func runObserving() -> Never {
+        // Banner first, and in the same words as the other two paths, so that
+        // `dranik soak` can count starts on every path rather than only where
+        // something is being limited. Without it an observing daemon restarting
+        // in a loop reported zero starts — which is the exact failure of
+        // 2026-10-12, seventeen hundred times over, invisible to the tool built
+        // for finding it.
+        log.notice("""
+        dranikd running\(self.dryRun ? " (DRY RUN — no SMC writes)" : "", privacy: .public), \
+        limit \(self.config.lowerLimit, privacy: .public)–\
+        \(self.config.upperLimit, privacy: .public)%, observing only
+        """)
         log.fault("""
         no charge-gate key on this machine matched its expected description. \
         Nothing here can limit charging, and nothing will be written. \
@@ -234,8 +257,18 @@ public final class Daemon {
         do {
             let monitor = PowerEventMonitor(queue: queue) { [weak self] event in
                 guard let self else { return }
-                if case .canSleep(let acknowledgement) = event { acknowledgement.allow() }
-                if case .willSleep(let acknowledgement) = event { acknowledgement.allow() }
+                // Answered and then dropped. There is nothing to decide before
+                // sleeping — the firmware enforces the corridor through it — and
+                // three SMC reads while macOS waits on the acknowledgement is
+                // work that can only delay a sleep.
+                if case .canSleep(let acknowledgement) = event {
+                    acknowledgement.allow()
+                    return
+                }
+                if case .willSleep(let acknowledgement) = event {
+                    acknowledgement.allow()
+                    return
+                }
                 if case .didWake = event {
                     // Not to re-decide — the firmware held the corridor all
                     // night — but because a firmware update applies across a
@@ -283,7 +316,8 @@ public final class Daemon {
     private func startFirmwareSafetyNet() {
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(
-            deadline: .now() + Self.safetyNetInterval, repeating: Self.safetyNetInterval
+            deadline: .now() + Self.firmwareSafetyNetInterval,
+            repeating: Self.firmwareSafetyNetInterval
         )
         timer.setEventHandler { [weak self] in
             self?.evaluateFirmware(trigger: "safety net")

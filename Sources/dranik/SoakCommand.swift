@@ -81,7 +81,12 @@ enum SoakCommand {
             return lines.joined(separator: "\n")
         }
 
-        if report.limitingIsSupported {
+        if report.heldBy == DaemonReport.HeldBy.firmware {
+            lines.append("A daemon IS running, and the firmware is holding the limit for")
+            lines.append("it. That path has no gate to move and nothing to verify on a")
+            lines.append("timer, so an empty window is the normal state rather than a")
+            lines.append("finding. What the corridor reads now is in `dranik status`.")
+        } else if report.limitingIsSupported {
             lines.append("A daemon IS running and can limit charging — this window just")
             lines.append("contains none of its records. Try a longer one.")
         } else {
@@ -114,22 +119,40 @@ enum SoakCommand {
         if let duration = analysis.duration, duration > 0 {
             lines.append(row("Records span", format(duration)))
             if let asked = requestedSeconds(since), duration < asked * 0.8 {
-                coverageNote = "Records only go back \(format(duration)) of the \(since) asked for"
-                    + " — the system log keeps less than that."
+                coverageNote = analysis.firmwareLimiting
+                    // On this path the daemon writes almost nothing, so a short
+                    // span is its own silence rather than a rolled-over log.
+                    // Blaming the log here would send someone looking for a
+                    // problem that is not there.
+                    ? "Records only span \(format(duration)) — but on this path the daemon"
+                        + " has little to write down, so that is expected."
+                    : "Records only go back \(format(duration)) of the \(since) asked for"
+                        + " — the system log keeps less than that."
             }
         }
         lines.append(row("Daemon starts", "\(analysis.restarts)"))
-        lines.append(row("Gate closed", "\(analysis.gateClosures) time(s)"))
-        lines.append(row("Gate opened", "\(analysis.gateOpens) time(s)"))
-        lines.append(row("Slept / woke", "\(analysis.sleeps) / \(analysis.wakes)"))
-        if analysis.unannouncedSleeps > 0 {
-            lines.append(row("Sleeps not announced", "\(analysis.unannouncedSleeps) (caught anyway)"))
+        if analysis.firmwareLimiting {
+            // None of the gate figures exist on this path, and printing them as
+            // zeroes would read as a daemon that did nothing.
+            lines.append(row("Limit held by", "the firmware"))
+            lines.append(row("Corridor rewritten", "\(analysis.corridorRepairs) time(s)"))
+            lines.append(row("Corridor refused", "\(analysis.corridorRefusals) time(s)"))
+            lines.append(row("Corridor unreadable", "\(analysis.corridorUnreadable) time(s)"))
+        } else {
+            lines.append(row("Gate closed", "\(analysis.gateClosures) time(s)"))
+            lines.append(row("Gate opened", "\(analysis.gateOpens) time(s)"))
+            lines.append(row("Slept / woke", "\(analysis.sleeps) / \(analysis.wakes)"))
+            if analysis.unannouncedSleeps > 0 {
+                lines.append(
+                    row("Sleeps not announced", "\(analysis.unannouncedSleeps) (caught anyway)")
+                )
+            }
+            lines.append(row("Watchdog firings", "\(analysis.watchdogStalls)"))
+            lines.append(row(
+                "Gate checks",
+                "\(analysis.verificationsConfirmed) passed, \(analysis.verificationFailures) failed"
+            ))
         }
-        lines.append(row("Watchdog firings", "\(analysis.watchdogStalls)"))
-        lines.append(row(
-            "Gate checks",
-            "\(analysis.verificationsConfirmed) passed, \(analysis.verificationFailures) failed"
-        ))
 
         if let coverageNote {
             lines.append("")
@@ -137,7 +160,19 @@ enum SoakCommand {
         }
 
         lines.append("")
-        if analysis.concerns.isEmpty {
+        if analysis.concerns.isEmpty && analysis.firmwareLimiting {
+            // Says what it checked rather than just "fine". On this path the
+            // daemon is quiet by design, so an empty window is not evidence —
+            // the evidence is the corridor still reading what was asked, and
+            // that is a question about now, not about the window.
+            lines.append("  Nothing to report. The corridor stayed as set for the whole")
+            lines.append("  window, and the firmware held it — including while asleep,")
+            lines.append("  when nothing of ours was running.")
+            lines.append("")
+            lines.append("  Note that this path is quiet by design: there is no gate to")
+            lines.append("  move and nothing to verify on a timer. What the corridor reads")
+            lines.append("  right now is in `dranik status`.")
+        } else if analysis.concerns.isEmpty {
             lines.append("  Nothing to report. The gate moved when it should and nothing")
             lines.append("  intervened to force it open.")
         } else {

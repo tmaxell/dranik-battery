@@ -32,6 +32,28 @@ public struct SoakAnalysis: Equatable, Sendable {
     /// should" on a machine that has no gate, while the battery sat at 100 %
     /// for six weeks. Silence from a daemon with nothing to do is not health.
     public var limitingUnavailable = false
+    /// True when the daemon spent the window handing the corridor to the
+    /// firmware rather than driving a gate itself.
+    ///
+    /// Everything else here counts gate events, and on the firmware path there
+    /// are none — no closures, no verifications, no watchdog. Without knowing
+    /// which path was in force, a window of complete silence reads as "nothing
+    /// happened" when in fact nothing *needed* to: the corridor was being held
+    /// by the hardware the whole time. That is the healthy state, and it has to
+    /// be told apart from a daemon that did nothing because it could not.
+    public var firmwareLimiting = false
+    /// Times the corridor was found saying something other than what was asked
+    /// and had to be written again.
+    ///
+    /// Expected to be zero. The corridor held for 2 days 20 hours untouched when
+    /// this was measured, so anything else means something other than this
+    /// daemon is writing those keys.
+    public var corridorRepairs = 0
+    /// Times the firmware refused the corridor outright.
+    public var corridorRefusals = 0
+    /// Times the corridor could not be read, so whether the limit held was not
+    /// knowable.
+    public var corridorUnreadable = 0
     public var verificationFailures = 0
     /// Checks that confirmed the gate did what was asked.
     ///
@@ -59,9 +81,20 @@ public struct SoakAnalysis: Equatable, Sendable {
             result.lastAt = record.timestamp
 
             let message = record.message
-            if message.contains("dranikd running") { result.restarts += 1 }
+            // A dry run is somebody watching the daemon decide, not launchd
+            // bringing the service back. Counting it produced "something else is
+            // ending it" for every `make daemon-dry-run`.
+            if message.contains("dranikd running") && !message.contains("DRY RUN") {
+                result.restarts += 1
+            }
             if message.contains("presumed stuck") { result.watchdogStalls += 1 }
             if message.contains("no charge-gate key") { result.limitingUnavailable = true }
+            if message.contains("held by the firmware") { result.firmwareLimiting = true }
+            if message.contains("putting it back") { result.corridorRepairs += 1 }
+            if message.contains("the firmware refused the corridor") { result.corridorRefusals += 1 }
+            if message.contains("firmware corridor could not be read") {
+                result.corridorUnreadable += 1
+            }
             if message.contains("gate check failed") { result.verificationFailures += 1 }
             if message.contains("gate verified") { result.verificationsConfirmed += 1 }
             if message.contains("charge limiting disabled") { result.distrusts += 1 }
@@ -93,15 +126,61 @@ public struct SoakAnalysis: Equatable, Sendable {
     public var concerns: [Concern] {
         var found: [Concern] = []
 
-        // First, because every verdict below is about how well the gate was
-        // driven, and there was no gate to drive.
-        if limitingUnavailable {
+        // First, because every verdict below is about how well some mechanism was
+        // driven, and here there was none to drive.
+        if limitingUnavailable && firmwareLimiting {
+            // Both in one window means the mechanism changed part-way — a
+            // firmware update, or an install picking up a build that recognises
+            // the corridor. Saying "nothing was limited for any of this window"
+            // would then be false for the half that was.
+            found.append(Concern(
+                severity: .worthNoting,
+                text: """
+                the mechanism changed during this window: part of it had no charge \
+                gate at all, and part had the corridor held by the firmware. The \
+                figures above mix the two — narrow the window to read either
+                """
+            ))
+        } else if limitingUnavailable {
             found.append(Concern(
                 severity: .serious,
                 text: """
                 no charge gate was recognised on this machine, so nothing was \
-                being limited for any of this window — whatever the gate figures \
-                below say
+                being limited for any of this window — whatever the figures \
+                above say
+                """
+            ))
+        }
+
+        if corridorRefusals > 0 {
+            found.append(Concern(
+                severity: .serious,
+                text: """
+                the firmware refused the charge corridor \(corridorRefusals) time(s) — \
+                each one is a stretch with no limit in force
+                """
+            ))
+        }
+
+        if corridorUnreadable > 0 {
+            found.append(Concern(
+                severity: .worthNoting,
+                text: """
+                the corridor could not be read \(corridorUnreadable) time(s), so whether \
+                the limit held then is not knowable from this window
+                """
+            ))
+        }
+
+        if corridorRepairs > 0 {
+            // Not a failure of ours: the corridor was put back. But it should
+            // never have moved, so a nonzero count means something else writes
+            // these keys — worth knowing before trusting the mechanism further.
+            found.append(Concern(
+                severity: .worthNoting,
+                text: """
+                the corridor had to be written again \(corridorRepairs) time(s) — \
+                it is meant to stay put, so something else is changing it
                 """
             ))
         }
