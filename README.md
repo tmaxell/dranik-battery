@@ -201,7 +201,14 @@ whatever is or is not running. What it can do is outlive the software — so:
   written at all.
 - Measured on this hardware: above the corridor the Mac runs off the battery to
   come down to it. The interface says so, because a plugged-in Mac that is
-  discharging otherwise reads as a fault.
+  discharging otherwise reads as a fault. Coming down from full costs about one
+  charge cycle, once.
+- **The charger is asked whether the limit is actually being honoured.** The
+  three keys reading back exactly as written proves only that they hold the
+  value. So if the corridor is set and correct and the battery charges past it
+  anyway, that is reported as a fault rather than as charging towards the limit.
+  The comparison uses the battery gauge's own charge, not the figure on screen —
+  see below.
 
 - **A reboot clears the corridor** — measured, the same as the gate. So the
   worst case for any bug here is still bounded by one restart. The cost is that
@@ -301,7 +308,7 @@ the app, or 0.02 % of one core.
 
 ```bash
 make build
-make test              # 286 tests, 895 assertions
+make test              # 292 tests, 909 assertions
 make ui-drill          # the app against a daemon that misbehaves on purpose
 make ui-snapshots      # render every popover state to PNG, light and dark
 make daemon-dry-run    # the whole decision cycle, writing nothing
