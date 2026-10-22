@@ -15,6 +15,11 @@ import Foundation
 // and temperature, which this cannot set, and they are already covered branch by
 // branch in `MenuBarPresentationTests`. What this adds is the wiring those tests
 // cannot reach: socket, decode, presentation, output.
+//
+// That boundary is not a style note. CI runs this on a machine with no battery,
+// where every reading is nil, so a scenario below the boundary renders a
+// different state there than it does here — which is exactly how "coming down to
+// the limit" was added, passed locally, and failed on the runner.
 
 struct Scenario {
     let name: String

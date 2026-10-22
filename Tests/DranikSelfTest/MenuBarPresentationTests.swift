@@ -133,6 +133,21 @@ func runMenuBarPresentationTests() {
         expectFalse(byDaemon.limitHeldByFirmware)
     }
 
+    test("coming down to the limit survives an unreadable battery") {
+        // It used to rank below the battery, so a machine that could not read
+        // its charge reported "Limiting to 80 %" while the firmware was actively
+        // bringing it down. Caught by CI, where the runner has no battery at all
+        // and every reading is nil.
+        let summary = MenuBarPresentation.summary(
+            link: .connected(daemonReport(
+                gate: "closed", reasonCode: "firmwareComingDown",
+                heldBy: DaemonReport.HeldBy.firmware
+            )),
+            battery: nil
+        )
+        expectEqual(summary.headline, "Coming down to 80 %")
+    }
+
     test("a stale reading is reported as not limiting, not as calm") {
         let summary = MenuBarPresentation.summary(
             link: .connected(daemonReport(gate: "open", reasonCode: "staleReading")),
