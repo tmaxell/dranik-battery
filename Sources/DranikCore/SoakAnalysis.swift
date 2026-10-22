@@ -51,6 +51,13 @@ public struct SoakAnalysis: Equatable, Sendable {
     public var corridorRepairs = 0
     /// Times the firmware refused the corridor outright.
     public var corridorRefusals = 0
+    /// Times the corridor was set and correct and the battery charged past it
+    /// anyway.
+    ///
+    /// The failure that reading the keys cannot see, which is why it is counted
+    /// separately from a refusal: a refusal is loud at the moment it happens,
+    /// this one is silent and only visible against the charger's own behaviour.
+    public var corridorIgnored = 0
     /// Times the corridor could not be read, so whether the limit held was not
     /// knowable.
     public var corridorUnreadable = 0
@@ -109,6 +116,9 @@ public struct SoakAnalysis: Equatable, Sendable {
                 result.corridorRepairs += 1
             }
             if message.contains("the firmware refused the corridor") { result.corridorRefusals += 1 }
+            if message.contains("the firmware is not enforcing it") {
+                result.corridorIgnored += 1
+            }
             if message.contains("firmware corridor could not be read") {
                 result.corridorUnreadable += 1
             }
@@ -175,6 +185,17 @@ public struct SoakAnalysis: Equatable, Sendable {
                 text: """
                 the firmware refused the charge corridor \(corridorRefusals) time(s) — \
                 each one is a stretch with no limit in force
+                """
+            ))
+        }
+
+        if corridorIgnored > 0 {
+            found.append(Concern(
+                severity: .serious,
+                text: """
+                the corridor was set and correct and the battery charged past it \
+                \(corridorIgnored) time(s) — the firmware is not honouring it, and \
+                nothing about the keys would show that
                 """
             ))
         }

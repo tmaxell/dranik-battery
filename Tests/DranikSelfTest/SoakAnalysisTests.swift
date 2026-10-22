@@ -276,6 +276,24 @@ func runSoakFirmwareTests() {
         expectTrue(analysis.concerns.contains { $0.severity == .worthNoting })
     }
 
+    test("a corridor charged past is serious, and counted apart from a refusal") {
+        // A refusal is loud at the moment it happens. This one is silent: the
+        // keys read back exactly as asked, and only the charger's behaviour
+        // gives it away. Counting them together would hide which happened.
+        let analysis = SoakAnalysis.analyse([
+            banner,
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "the 80% corridor is set and the battery is charging anyway at 92%"
+                    + " — the firmware is not enforcing it"
+            ),
+        ])
+        expectEqual(analysis.corridorIgnored, 1)
+        expectEqual(analysis.corridorRefusals, 0)
+        expectFalse(analysis.isHealthy)
+        expectTrue(analysis.concerns.contains { $0.severity == .serious })
+    }
+
     test("a corridor that could not be read is reported rather than assumed well") {
         let analysis = SoakAnalysis.analyse([
             banner,

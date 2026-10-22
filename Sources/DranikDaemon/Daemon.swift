@@ -360,8 +360,12 @@ public final class Daemon {
 
         let snapshot = try? PowerReader.snapshot()
         let activity = Self.activity(from: snapshot)
+        let gauge = firmwareActuator.gaugeCharge()
         var decision = FirmwareLimitPolicy.decide(
-            config: config, observed: firmwareActuator.read(), activity: activity
+            config: config,
+            observed: firmwareActuator.read(),
+            activity: activity,
+            gaugeCharge: gauge
         )
 
         // Every decision line on this path carries the marker when nothing is
@@ -382,7 +386,8 @@ public final class Daemon {
                 decision = FirmwareLimitPolicy.decide(
                     config: config,
                     observed: firmwareActuator.read(),
-                    activity: activity
+                    activity: activity,
+                    gaugeCharge: gauge
                 )
                 // Accepted by the SMC and still not holding is the firmware
                 // declining the corridor, and it has to read that way. Left as

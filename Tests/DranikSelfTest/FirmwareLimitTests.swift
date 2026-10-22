@@ -152,6 +152,57 @@ func runFirmwareLimitPolicyTests() {
         expectFalse(decision.reason.description.contains("until it comes down"))
     }
 
+    test("a corridor that reads back right and is charged past anyway is a fault") {
+        // The hole left by reading the keys. `SMCConnection.write` says it
+        // itself: a matching read-back proves the key holds the value and
+        // nothing more. The gate path answers this with the charger's own flag;
+        // without this check the firmware path had no answer at all, and a
+        // firmware quietly ignoring the corridor would have read as "charging
+        // towards the 80% limit" indefinitely.
+        let decision = FirmwareLimitPolicy.decide(
+            config: config, observed: held, activity: .charging, gaugeCharge: 92
+        )
+        expectEqual(decision.reason.code, "firmwareNotEnforcing")
+        expectTrue(decision.reason.isFault)
+        expectFalse(decision.requiresWrite, "the keys are right — rewriting them fixes nothing")
+    }
+
+    test("the confirmation uses the gauge's charge, not the one on screen") {
+        // Measured 2026-10-22: gauge 80, displayed 84, corridor 75–80, working
+        // perfectly. Feeding the displayed figure in would have called that a
+        // firmware that ignores its corridor.
+        let decision = FirmwareLimitPolicy.decide(
+            config: config, observed: held, activity: .heldOff, gaugeCharge: 80
+        )
+        expectEqual(decision.reason.code, "reachedUpper")
+    }
+
+    test("charging below the corridor is not mistaken for a firmware ignoring it") {
+        let decision = FirmwareLimitPolicy.decide(
+            config: config, observed: held, activity: .charging, gaugeCharge: 61
+        )
+        expectEqual(decision.reason.code, "firmwareChargingToLimit")
+    }
+
+    test("coming down from above the corridor is the firmware working, not failing") {
+        // The state the machine spent forty minutes in on 2026-10-22 while it
+        // walked 100 % down to 80 %. Reporting a fault there would have made a
+        // working limit look broken for the whole descent.
+        let decision = FirmwareLimitPolicy.decide(
+            config: config, observed: held, activity: .comingDown, gaugeCharge: 94
+        )
+        expectEqual(decision.reason.code, "firmwareComingDown")
+        expectFalse(decision.reason.isFault)
+    }
+
+    test("an unreadable gauge costs the confirmation and nothing else") {
+        let decision = FirmwareLimitPolicy.decide(
+            config: config, observed: held, activity: .charging, gaugeCharge: nil
+        )
+        expectEqual(decision.reason.code, "firmwareChargingToLimit")
+        expectFalse(decision.reason.isFault)
+    }
+
     test("the limit's prose never quotes a charge percentage") {
         // Because there are two of them and they disagree. Naming either one
         // invites "but the menu bar says 83".

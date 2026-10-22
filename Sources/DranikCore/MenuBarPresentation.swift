@@ -212,6 +212,15 @@ public enum MenuBarPresentation {
                 "The charge limit cannot be read, so it cannot be trusted.",
                 icon: .warning, tone: .caution
             )
+        case "firmwareNotEnforcing":
+            // The limit is set, correct, and being ignored. Loudest of the three
+            // because nothing about it looks wrong from anywhere else: the keys
+            // read back exactly as asked.
+            return summary(
+                "Not limiting — the limit is set but ignored",
+                "Charging went past it anyway. The firmware is not honouring it.",
+                icon: .warning, tone: .alarm
+            )
         default:
             break
         }

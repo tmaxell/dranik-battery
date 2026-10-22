@@ -102,6 +102,14 @@ let scenarios = [
         headline: "Not limiting", icon: "warning"
     ),
     Scenario(
+        "a corridor that is set, correct, and being ignored",
+        report: report(
+            gate: "open", reasonCode: "firmwareNotEnforcing",
+            heldBy: DaemonReport.HeldBy.firmware
+        ),
+        headline: "Not limiting", icon: "warning"
+    ),
+    Scenario(
         "a charge above the corridor, coming down on battery",
         report: report(
             gate: "closed", reasonCode: "firmwareComingDown",

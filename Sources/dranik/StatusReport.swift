@@ -48,7 +48,7 @@ struct StatusReport {
                 }
             }
 
-            if let brsc = SMCKey("BRSC"), let reading = try smc.read(brsc) {
+            if let reading = try smc.read(BatteryGauge.stateOfCharge) {
                 gaugeCharge = reading.value.doubleValue.map { Int($0) }
             }
 
