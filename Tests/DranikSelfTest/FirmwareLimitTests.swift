@@ -293,7 +293,7 @@ func runFirmwareModeTests() {
         // stall. The safety net stays for a different reason — the corridor is
         // state something else could overwrite.
         expectFalse(DaemonMode.firmwareLimiting.runsWatchdog)
-        expectTrue(DaemonMode.firmwareLimiting.runsSafetyNet)
+        expectEqual(DaemonMode.firmwareLimiting.safetyNet, .corridor)
         expectTrue(DaemonMode.firmwareLimiting.mayWriteToSMC)
     }
 }

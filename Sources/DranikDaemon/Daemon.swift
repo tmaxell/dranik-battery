@@ -146,8 +146,7 @@ public final class Daemon {
             exit(EX_OSERR)
         }
 
-        startSafetyNet()
-        watchdog.start()
+        startPeriodicWork()
         startControlServer()
 
         log.notice("""
@@ -219,6 +218,9 @@ public final class Daemon {
             """)
         }
 
+        // Asked rather than skipped, so that "observing starts no timers" is a
+        // fact about `DaemonMode` and not a thing this function happens not to do.
+        startPeriodicWork()
         startControlServer()
 
         withExtendedLifetime(signalSources) {
@@ -297,7 +299,7 @@ public final class Daemon {
             """)
         }
 
-        startFirmwareSafetyNet()
+        startPeriodicWork()
         startControlServer()
 
         log.notice("""
@@ -310,6 +312,23 @@ public final class Daemon {
         withExtendedLifetime(signalSources) {
             dispatchMain()
         }
+    }
+
+    /// Starts the timers this mode is entitled to run — and only those.
+    ///
+    /// One place rather than three. Each run path used to start its own, which
+    /// left `DaemonMode` asserting what may run while nothing consulted it, so
+    /// the two could drift apart silently. They must not: an observing daemon
+    /// running the watchdog would exit non-zero for want of decisions, and
+    /// launchd would turn that into the restart loop of 2026-10-12 at
+    /// two-minute intervals instead of ten-second ones.
+    private func startPeriodicWork() {
+        switch mode.safetyNet {
+        case .none: break
+        case .decisions: startSafetyNet()
+        case .corridor: startFirmwareSafetyNet()
+        }
+        if mode.runsWatchdog { watchdog.start() }
     }
 
     /// Re-reads the corridor and what the charger is doing about it.

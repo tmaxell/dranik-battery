@@ -124,12 +124,18 @@ func runLiveSMCTests() {
 /// The daemon spent five hours restarting every ten seconds because a firmware
 /// update removed its charge-gate key and the only answer it had was to die.
 func runDaemonModeTests() {
-    test("a recognised gate means limiting") {
-        expectEqual(DaemonMode.forGate(isSupported: true), .limiting)
+    test("a recognised gate and no firmware corridor means limiting") {
+        expectEqual(
+            DaemonMode.forHardware(firmwareLimitIsSupported: false, gateIsSupported: true),
+            .limiting
+        )
     }
 
-    test("no recognised gate means observing, not exiting") {
-        expectEqual(DaemonMode.forGate(isSupported: false), .observing)
+    test("recognising nothing means observing, not exiting") {
+        expectEqual(
+            DaemonMode.forHardware(firmwareLimitIsSupported: false, gateIsSupported: false),
+            .observing
+        )
     }
 
     test("observing never writes to the SMC") {
@@ -147,8 +153,13 @@ func runDaemonModeTests() {
         expectTrue(DaemonMode.limiting.runsWatchdog)
     }
 
-    test("observing runs no safety net") {
-        expectFalse(DaemonMode.observing.runsSafetyNet)
-        expectTrue(DaemonMode.limiting.runsSafetyNet)
+    test("each mode names the backstop it runs, so the daemon can act on it") {
+        // Not a yes-or-no: the two limiting modes both want a timer and want
+        // different things from it. As a `Bool` this could not be acted on, and
+        // each run path started its own — which is how the property and the
+        // daemon could drift apart without anything noticing.
+        expectEqual(DaemonMode.observing.safetyNet, .none)
+        expectEqual(DaemonMode.limiting.safetyNet, .decisions)
+        expectEqual(DaemonMode.firmwareLimiting.safetyNet, .corridor)
     }
 }
