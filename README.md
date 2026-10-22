@@ -308,7 +308,7 @@ the app, or 0.02 % of one core.
 
 ```bash
 make build
-make test              # 292 tests, 909 assertions
+make test              # 293 tests, 910 assertions
 make ui-drill          # the app against a daemon that misbehaves on purpose
 make ui-snapshots      # render every popover state to PNG, light and dark
 make daemon-dry-run    # the whole decision cycle, writing nothing
