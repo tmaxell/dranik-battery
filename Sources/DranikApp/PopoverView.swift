@@ -80,10 +80,10 @@ struct PopoverView: View {
             // they will be looking when it matters. It is a measured property of
             // the hardware rather than a defect, and discovering it in the
             // morning is the worst way to discover it.
-            .help(
-                "Charging stops at the limit. With the default sleep policy, "
-                + "a lidded Mac on a charger will not charge overnight."
-            )
+            //
+            // Which is also why it must not be said when it is not true: where
+            // the firmware holds the corridor, the overnight caveat disappears.
+            .help(limitHelp)
 
             VStack(spacing: 2) {
                 HStack {
@@ -119,6 +119,15 @@ struct PopoverView: View {
             }
             .disabled(!model.summary.controlsAreEnabled || !model.summary.isLimiting)
         }
+    }
+
+    private var limitHelp: String {
+        if model.summary.limitHeldByFirmware {
+            return "Charging stops at the limit. The firmware holds it, so it "
+                + "holds while the Mac is asleep too."
+        }
+        return "Charging stops at the limit. With the default sleep policy, "
+            + "a lidded Mac on a charger will not charge overnight."
     }
 
     /// The bounds the controller enforces, not a pair of numbers repeated here.

@@ -62,9 +62,24 @@ public struct DaemonReport: Codable, Equatable, Sendable {
     /// A client showing an icon or a warning branches on this; matching on the
     /// prose would break the first time a sentence is improved.
     public var reasonCode: String
+    /// Who is holding the limit: `"firmware"`, `"daemon"` or `"nothing"`.
+    ///
+    /// The difference is not cosmetic. A corridor held by the firmware survives
+    /// sleep, a restart and a crash, which is why `sleepPolicy` stops applying
+    /// and why uninstalling has to clear it. A client that shows a sleep caveat
+    /// or a trust warning needs to know which world it is in.
+    public var heldBy: String
     /// The daemon's own version. See `DranikVersion` for why a client cares.
     public var version: String
     public var decidedAt: Date
+
+    /// The values `heldBy` can take. A client matches on these, so they are
+    /// spelled once.
+    public enum HeldBy {
+        public static let firmware = "firmware"
+        public static let daemon = "daemon"
+        public static let nothing = "nothing"
+    }
 
     public init(
         upperLimit: Int,
@@ -78,6 +93,7 @@ public struct DaemonReport: Codable, Equatable, Sendable {
         reasonCode: String = "unknown",
         limitingIsSupported: Bool = true,
         preventIdleSleepWhileCharging: Bool = false,
+        heldBy: String = DaemonReport.HeldBy.daemon,
         version: String = DranikVersion.current,
         decidedAt: Date
     ) {
@@ -92,6 +108,7 @@ public struct DaemonReport: Codable, Equatable, Sendable {
         self.reasonCode = reasonCode
         self.limitingIsSupported = limitingIsSupported
         self.preventIdleSleepWhileCharging = preventIdleSleepWhileCharging
+        self.heldBy = heldBy
         self.version = version
         self.decidedAt = decidedAt
     }
@@ -99,7 +116,7 @@ public struct DaemonReport: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case upperLimit, lowerLimit, thermalCutoff, sleepPolicy, gate, reason
         case gateIsTrusted, chargerReason, reasonCode, limitingIsSupported
-        case preventIdleSleepWhileCharging, version, decidedAt
+        case preventIdleSleepWhileCharging, heldBy, version, decidedAt
     }
 
     /// Decoded by hand so that fields added later arrive as their defaults rather
@@ -132,6 +149,11 @@ public struct DaemonReport: Codable, Equatable, Sendable {
         ) ?? false
         reasonCode = try container.decodeIfPresent(String.self, forKey: .reasonCode) ?? "unknown"
         version = try container.decodeIfPresent(String.self, forKey: .version) ?? "unknown"
+
+        // A daemon that does not say is one from before the firmware corridor
+        // existed, and every build before it held the limit in the process.
+        heldBy = try container.decodeIfPresent(String.self, forKey: .heldBy)
+            ?? (limitingIsSupported ? HeldBy.daemon : HeldBy.nothing)
     }
 }
 

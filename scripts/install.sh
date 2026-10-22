@@ -48,8 +48,12 @@ if echo "${STATUS}" | grep -q "SMC .*unavailable"; then
     exit 1
 fi
 
-if ! echo "${STATUS}" | grep -q "Charge gate .*key"; then
-    echo "WARNING: no charge gate on this machine that this build recognises." >&2
+# Either mechanism will do. A machine whose firmware took `CHTE` away may well
+# have the firmware corridor instead — that is what the mBoot-20457 update did —
+# and warning about a missing gate there would be alarming and wrong.
+if ! echo "${STATUS}" | grep -q "Charge gate .*key" \
+   && ! echo "${STATUS}" | grep -qE "Firmware limit +bf"; then
+    echo "WARNING: nothing on this machine that this build can limit charging with." >&2
     echo "         Installing anyway: the daemon will report why nothing is" >&2
     echo "         being limited, but it will NOT limit charging." >&2
     echo "${STATUS}" | sed -n '/Charge control/,$p' >&2

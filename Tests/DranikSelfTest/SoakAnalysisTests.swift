@@ -179,3 +179,136 @@ func runSoakLimitingTests() {
         expectTrue(analysis.isHealthy)
     }
 }
+
+func runSoakFirmwareTests() {
+    /// The one line the firmware path writes when it starts, as the daemon
+    /// actually writes it.
+    let banner = DaemonLogRecord(
+        timestamp: Date(), category: "Daemon",
+        message: "dranikd running, limit 75–80%, held by the firmware via bfF0+bfD0+bfE0"
+    )
+
+    test("a quiet firmware window is recognised as the firmware path, not as idleness") {
+        // Everything else this analysis counts is a gate event, and the firmware
+        // path produces none. Without knowing which path was in force, silence
+        // would read as "nothing happened" on a machine where the hardware was
+        // holding the limit the entire time.
+        let analysis = SoakAnalysis.analyse([banner])
+        expectTrue(analysis.firmwareLimiting)
+        expectFalse(analysis.limitingUnavailable, "the firmware path is not an absent one")
+        expectTrue(analysis.isHealthy)
+        expectEqual(analysis.gateClosures, 0)
+        expectEqual(analysis.verificationsConfirmed, 0)
+    }
+
+    test("a firmware that refuses the corridor is serious") {
+        let analysis = SoakAnalysis.analyse([
+            banner,
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "the firmware refused the corridor — charging is not being limited"
+            ),
+        ])
+        expectEqual(analysis.corridorRefusals, 1)
+        expectFalse(analysis.isHealthy)
+        expectTrue(analysis.concerns.contains { $0.severity == .serious })
+    }
+
+    test("a corridor that had to be rewritten is worth noting") {
+        // It is meant to stay put: it held for 2 days 20 hours untouched when
+        // measured. A repair means something else writes those keys, which is
+        // worth knowing before trusting the mechanism further.
+        let analysis = SoakAnalysis.analyse([
+            banner,
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "firmware corridor is off, not the 75–80% asked for — putting it back"
+            ),
+        ])
+        expectEqual(analysis.corridorRepairs, 1)
+        expectTrue(analysis.isHealthy, "it was repaired, so the limit held")
+        expectTrue(analysis.concerns.contains { $0.severity == .worthNoting })
+    }
+
+    test("a corridor that could not be read is reported rather than assumed well") {
+        let analysis = SoakAnalysis.analyse([
+            banner,
+            DaemonLogRecord(
+                timestamp: Date(), category: "FirmwareLimit",
+                message: "firmware corridor could not be read"
+            ),
+        ])
+        expectEqual(analysis.corridorUnreadable, 1)
+        expectFalse(analysis.concerns.isEmpty)
+    }
+
+    test("a window spanning both mechanisms says so instead of condemning all of it") {
+        // What a real window looks like across an install that starts
+        // recognising the corridor: the old daemon logging no gate, the new one
+        // logging the firmware. "Nothing was limited for any of this window" is
+        // false for the half that was.
+        let analysis = SoakAnalysis.analyse([
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "no charge-gate key on this machine matched its expected description."
+            ),
+            banner,
+        ])
+        expectTrue(analysis.limitingUnavailable)
+        expectTrue(analysis.firmwareLimiting)
+        expectTrue(analysis.isHealthy, "a change of mechanism is not a failure")
+        expectTrue(analysis.concerns.contains { $0.text.contains("mechanism changed") })
+    }
+
+    test("an observing daemon's starts are counted too") {
+        // They were not, because the observing path logged no banner. A daemon
+        // restarting in a loop with nothing to limit then showed zero starts —
+        // the shape of 2026-10-12, invisible to the tool meant to catch it.
+        let analysis = SoakAnalysis.analyse([
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "dranikd running, limit 75–80%, observing only"
+            ),
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "dranikd running, limit 75–80%, observing only"
+            ),
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "no charge-gate key on this machine matched its expected description."
+            ),
+        ])
+        expectEqual(analysis.restarts, 2)
+        expectTrue(analysis.limitingUnavailable)
+        expectFalse(analysis.firmwareLimiting)
+        expectFalse(analysis.isHealthy)
+    }
+
+    test("a dry run is not counted as the service restarting") {
+        // `make daemon-dry-run` used to add a restart each time, which then read
+        // as "something else is ending it".
+        let analysis = SoakAnalysis.analyse([
+            banner,
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "dranikd running (DRY RUN — no SMC writes), limit 75–80%,"
+                    + " held by the firmware via bfF0+bfD0+bfE0"
+            ),
+        ])
+        expectEqual(analysis.restarts, 1, "only the real one counts")
+        expectTrue(analysis.isHealthy)
+    }
+
+    test("gate records and firmware records do not count as each other") {
+        let analysis = SoakAnalysis.analyse([
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "dranikd running, limit 75–80%, gate CHTE"
+            ),
+            DaemonLogRecord(timestamp: Date(), category: "Gate", message: "gate verified closed"),
+        ])
+        expectFalse(analysis.firmwareLimiting)
+        expectEqual(analysis.corridorRepairs, 0)
+        expectEqual(analysis.verificationsConfirmed, 1)
+    }
+}

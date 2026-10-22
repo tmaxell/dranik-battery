@@ -14,23 +14,36 @@ no further, which is the whole idea.
 ```
 $ dranik daemon
   Limit           75–80 %
-  Gate            closed
+  Held by         the firmware — survives sleep, restarts and crashes
+  Charging        held off
   Reason          charge 80% reached the 80% limit
   Charger says    inhibited
-  Sleep policy    holdLimit
-  Thermal cutoff  40 °C
 ```
 
 ## Status
 
-Working and in daily use. The gate closes, current falls to zero, and the
-hardware confirms the inhibit with its own flag rather than the software taking
-its own word for it.
+Working and in daily use. Charging stops, current falls to zero, and the hardware
+confirms the inhibit with its own flag rather than the software taking its own
+word for it.
 
-Two multi-day soak runs have each found real defects — a watchdog that reopened
-the gate after every sleep, and a pair of unrelated verification hiccups that
-disabled charge limiting for two days. Both are fixed, and both are now regression
-tests. See `dranik soak`.
+There are two ways a Mac can hold the limit, and the daemon picks by probing
+rather than by model or OS version:
+
+| | Held by | Holds through sleep | Survives a reboot | Keys |
+|---|---|---|---|---|
+| **Firmware corridor** | the firmware | yes | no — the daemon writes it again at startup | `bfF0`, `bfD0`, `bfE0` |
+| **Software gate** | this daemon | no — hence most of the safety machinery | no | `CHTE`, or `CH0B`/`CH0C` |
+
+Apple's firmware update shipped as `mBoot-20457` (in the macOS 14.8.9, 15.8 and
+26.7 security updates) removed the software gate and introduced the firmware
+corridor in its place. Where the corridor is available it is used, because a
+limit the hardware keeps is a limit that holds while the machine is asleep.
+
+Three multi-day soak runs have each found real defects — a watchdog that reopened
+the gate after every sleep, a pair of unrelated verification hiccups that
+disabled charge limiting for two days, and a daemon that restarted itself 1700
+times when its key disappeared. All are fixed and all are now regression tests.
+See `dranik soak`.
 
 ## Requirements
 
@@ -50,9 +63,9 @@ and one binary.
 make install
 ```
 
-Not under `sudo` — the target elevates only the install script. The script
-refuses to install on a machine where it cannot find a charge-control key it
-recognises.
+Not under `sudo` — the target elevates only the install script. It installs even
+on a machine with neither mechanism, saying so loudly: the daemon then reports
+why nothing is being limited, which is the one answer worth having there.
 
 The default is a limit of 80 % resuming at 75 %.
 
@@ -60,8 +73,11 @@ The default is a limit of 80 % resuming at 75 %.
 make uninstall
 ```
 
-Stops the daemon, waits for the hardware to react, **verifies the gate is open**,
-and refuses to remove anything if it is not.
+Stops the daemon, **clears the firmware corridor**, verifies both that and the
+gate, and refuses to remove anything if either is still holding charging back.
+That check is the point of the command: a corridor is kept by the hardware on
+purpose, so removing the daemon without clearing it would leave a Mac limiting
+its own charging with nothing installed to change it.
 
 ## Use
 
@@ -70,7 +86,8 @@ dranik daemon              # what the daemon is doing right now
 dranik limit 75            # change the limit without restarting anything
 dranik limit 80 70         # limit and resume point
 dranik off                 # stop managing charging
-dranik retrust             # trust the gate again after a failed verification
+dranik retrust             # arm the limit again: trust the gate after a failed
+                           # verification, or re-apply the firmware corridor
 dranik status              # battery state; needs no daemon
 dranik soak --since 24h    # did the daemon behave over the last day
 make logs                  # follow its decisions
@@ -83,9 +100,13 @@ it, run `dranik reload`.
 |---|---|
 | `upperLimit` | 50–100. Exactly 100 means "do not manage charging at all" |
 | `lowerLimit` | The level at which charging resumes. The band is what stops the gate flapping |
-| `thermalCutoff` | °C above which charging is held off |
-| `sleepPolicy` | `holdLimit`, `allowCharge` or `chargeIfLow` — see below |
-| `preventIdleSleepWhileCharging` | Hold off idle sleep while charging towards the limit. Off by default |
+| `thermalCutoff` | °C above which charging is held off. Software gate only |
+| `sleepPolicy` | `holdLimit`, `allowCharge` or `chargeIfLow` — see below. Software gate only |
+| `preventIdleSleepWhileCharging` | Hold off idle sleep while charging towards the limit. Off by default. Software gate only |
+
+The last three exist because the software gate stops being enforced the moment
+the daemon stops. On the firmware corridor they do nothing, and `dranik daemon`
+leaves them out rather than showing a setting with no effect.
 
 ### The menu bar app
 
@@ -108,6 +129,13 @@ DranikApp --check    # what the app can see right now, as text
 ```
 
 ### What happens during sleep
+
+**On the firmware corridor, nothing to decide.** The firmware enforces the limit
+whether or not anything is running, so a lidded laptop on a charger stops at the
+limit like any other time. `sleepPolicy` has no effect, and `dranik daemon` says
+so rather than printing a setting that does nothing.
+
+The rest of this section is about the software gate.
 
 The daemon does not run while the machine sleeps, and the gate's position
 survives sleep — both measured. So whatever the daemon leaves behind is what the
@@ -157,6 +185,41 @@ usually shorter than a week. The report prints the span it actually covered.
 
 ## Safety
 
+### The firmware corridor
+
+The risk here is the opposite of the gate's, and smaller. The corridor cannot
+leave the battery flat: below the lower bound the firmware charges on its own,
+whatever is or is not running. What it can do is outlive the software — so:
+
+- The corridor is **deliberately left in place** when the daemon stops. It is the
+  limit working, and clearing it on exit would mean charge limiting lapsed on
+  every restart, including the one `make install` performs.
+- `make uninstall` clears it, verifies that it cleared, and refuses to remove
+  anything if it did not.
+- Writing it goes through the same guarded path as everything else: all three
+  keys must report their exact expected size, type and attributes, or nothing is
+  written at all.
+- Measured on this hardware: above the corridor the Mac runs off the battery to
+  come down to it. The interface says so, because a plugged-in Mac that is
+  discharging otherwise reads as a fault.
+
+- **A reboot clears the corridor** — measured, the same as the gate. So the
+  worst case for any bug here is still bounded by one restart. The cost is that
+  charging is unrestricted from the reboot until the daemon starts and writes the
+  corridor again, which is why it writes it at startup rather than trusting what
+  it finds.
+
+**One thing to expect.** The firmware measures the corridor against the battery
+gauge's own state of charge, and macOS displays a smoothed figure that can sit a
+few points higher — 83 against the gauge's 79 while coming down from full,
+settling to 80 against 79 after a week inside the corridor. So the figure on
+screen may read above the limit for a while. This is not compensated for: the
+offset moves with charge history, so writing 77 to land on 80 would be a guess
+that drifts. `dranik status` prints both figures, and the popover says why they
+differ.
+
+### The software gate
+
 The only real risk is leaving the gate shut and walking away. Against that:
 
 - Below 20 % the gate opens **unconditionally**, whatever the limit, the
@@ -180,21 +243,35 @@ The only real risk is leaving the gate shut and walking away. Against that:
 If something goes wrong:
 
 ```bash
-dranik off              # stop limiting
-sudo make uninstall     # remove it entirely
-sudo reboot             # clears the SMC regardless
+dranik off              # stop limiting — clears the corridor, or opens the gate
+sudo make uninstall     # remove it entirely, clearing both first
+sudo reboot             # clears the SMC regardless — gate and corridor both
 ```
 
 ## How it works
 
-On Apple Silicon, charging is controlled by the SMC. Some firmware exposes a
-hardware limit key (`CHWA`); this project does not rely on one, because it is
-absent on plenty of machines — `dranik status` reports whether yours has it. The
-threshold is held by the daemon instead: it closes and opens the software charge
-gate (`CHTE`, or `CH0B`/`CH0C` on older firmware) as the charge crosses the edges
-of the band. Which keys exist is decided by probing at runtime, with the whole
-`KeyInfoData` validated against a known-good reference — never by assuming a chip
-generation.
+On Apple Silicon, charging is controlled by the SMC, and which keys a given Mac
+offers for it has changed more than once. So nothing here is decided by chip
+generation or OS version: every key is probed at runtime, with the whole
+`KeyInfoData` validated against a known-good reference before anything is
+written. A key that exists but no longer matches its expected size, type and
+attributes is treated as unknown rather than written to — firmware has
+repurposed keys before, and a blind write could actuate something else entirely.
+
+Two mechanisms, preferred in this order:
+
+- **Firmware corridor** — `bfD0` and `bfE0` carry the bounds, `bfF0` switches it
+  on, and the firmware holds the band by itself. The daemon sets it and then only
+  checks that it still says what was asked. Writing it means deactivate, bounds,
+  activate, in that order: a corridor must not be live while half-written.
+- **Software charge gate** — `CHTE`, or `CH0B`/`CH0C` on older firmware. The
+  daemon holds the band itself, closing and opening the gate as the charge
+  crosses the edges. Everything in `Safety` below about watchdogs, verification
+  and sleep policy exists because of this one.
+
+Some firmware also exposes a fixed hardware limit key (`CHWA`); this project does
+not rely on it, because it is absent on plenty of machines. `dranik status`
+reports which of the three yours has.
 
 ```
 Sources/
@@ -224,7 +301,7 @@ the app, or 0.02 % of one core.
 
 ```bash
 make build
-make test              # 224 tests, 703 assertions
+make test              # 282 tests, 885 assertions
 make ui-drill          # the app against a daemon that misbehaves on purpose
 make ui-snapshots      # render every popover state to PNG, light and dark
 make daemon-dry-run    # the whole decision cycle, writing nothing
@@ -234,7 +311,7 @@ make test-ci           # the suite minus the groups that need this machine
 
 Every push builds on GitHub Actions: compile, the suite, the UI drill, and the
 app bundle, which is uploaded as an artifact. CI runs `make test-ci` rather than
-`make test` — three test groups read the SMC and the battery of the machine they
+`make test` — four test groups read the SMC and the battery of the machine they
 run on, and "a charge gate is detected" is an assertion about *this* hardware.
 On a builder without one it would fail while saying nothing about the code.
 

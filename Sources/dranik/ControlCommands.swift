@@ -64,25 +64,55 @@ enum ControlCommands {
     }
 
     private static func render(_ report: DaemonReport) -> String {
+        let byFirmware = report.heldBy == DaemonReport.HeldBy.firmware
         var lines = [
             row("Limit", "\(report.lowerLimit)–\(report.upperLimit) %"),
-            row("Gate", report.gate),
+            row("Held by", describeHolder(report.heldBy)),
+            // Two different things wear the same row. On the gate path the
+            // position of our own key is the interesting fact; on the firmware
+            // path we have no key, and what matters is whether the charger is
+            // currently being held off.
+            byFirmware
+                ? row("Charging", describeCharging(report.gate))
+                : row("Gate", report.gate),
             row("Reason", report.reason),
             row("Charger says", report.chargerReason ?? "-"),
-            row("Sleep policy", report.sleepPolicy),
-            row("Thermal cutoff", String(format: "%.0f °C", report.thermalCutoff)),
         ]
-        if report.preventIdleSleepWhileCharging {
+        if !byFirmware {
+            // Both of these are the gate path's machinery. Printing them under
+            // firmware control would promise behaviour that is not there.
+            lines.append(row("Sleep policy", report.sleepPolicy))
+            lines.append(row("Thermal cutoff", String(format: "%.0f °C", report.thermalCutoff)))
+        }
+        if report.preventIdleSleepWhileCharging && !byFirmware {
             lines.append(row("Idle sleep", "held off while charging"))
         }
+        // Before the explanations, not after them: they are all about how the
+        // limit behaves, and the first thing to know is that there isn't one.
         if report.upperLimit >= 100 {
             lines.append(row("", "limiting is off — charging is unmanaged"))
+        }
+        // And skipped entirely when limiting is off, because "a lidded laptop on
+        // a charger stops at the limit" is a promise about a limit that is not
+        // set.
+        if byFirmware && report.upperLimit < 100 {
+            lines.append("")
+            lines.append("  The firmware holds the corridor, so it holds it while the Mac is")
+            lines.append("  asleep too: a lidded laptop on a charger stops at the limit, and")
+            lines.append("  `sleepPolicy` no longer applies.")
+            lines.append("  The thermal cutoff does not apply on this path yet — overheating")
+            lines.append("  is left to the firmware's own protection.")
+            lines.append("  The firmware measures against the battery gauge's own charge, which")
+            lines.append("  reads a little lower than macOS shows — so charging settles a point")
+            lines.append("  or two above the limit. `dranik status` prints both figures.")
+            lines.append("  A reboot clears the corridor, so the daemon writes it again when it")
+            lines.append("  starts. Until it does, charging is unrestricted.")
         }
         if !report.limitingIsSupported {
             // Otherwise identical on screen to a gate that is open on purpose,
             // which is the one reading that must not be left available.
             lines.append("")
-            lines.append("  NOTE: this Mac has no charge gate this build recognises.")
+            lines.append("  NOTE: this Mac offers nothing this build can limit charging with.")
             lines.append("  The daemon runs and reports, but it is limiting nothing.")
         }
         // The charger reporting something this project cannot name means
@@ -113,6 +143,28 @@ enum ControlCommands {
             lines.append("  Restart it to match: sudo launchctl kickstart -k system/com.dranik.battery")
         }
         return lines.joined(separator: "\n")
+    }
+
+    private static func describeHolder(_ heldBy: String) -> String {
+        switch heldBy {
+        case DaemonReport.HeldBy.firmware:
+            // Not "survives restarts" unqualified: a reboot clears it, measured
+            // 2026-10-22. Saying so here is the difference between a person
+            // knowing why their battery reached 100 % overnight and not.
+            return "the firmware — holds through sleep and crashes; a reboot clears it"
+        case DaemonReport.HeldBy.daemon:
+            return "this daemon — only while it is running"
+        default:
+            return "nothing"
+        }
+    }
+
+    private static func describeCharging(_ gate: String) -> String {
+        switch gate {
+        case "closed": return "held off"
+        case "open": return "permitted"
+        default: return gate
+        }
     }
 
     private static func row(_ label: String, _ value: String) -> String {
