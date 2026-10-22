@@ -365,6 +365,17 @@ public final class Daemon {
                     observed: firmwareActuator.read(),
                     activity: activity
                 )
+                // Accepted by the SMC and still not holding is the firmware
+                // declining the corridor, and it has to read that way. Left as
+                // `corridorDrifted` it reported "putting it back" as the settled
+                // state, which claims an action that is not going to happen
+                // until the next pass. A dry run is exempt: nothing was written,
+                // so of course nothing stuck.
+                if decision.requiresWrite && !dryRun {
+                    decision = FirmwareLimitDecision(
+                        plan: decision.plan, requiresWrite: false, reason: .writeFailed
+                    )
+                }
                 // The keys are right immediately; the charger is not. Come back
                 // once it has had time to act, because nothing will announce it.
                 scheduleFirmwareFollowUp()
