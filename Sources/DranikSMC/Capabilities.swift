@@ -125,9 +125,11 @@ public struct Capabilities: Equatable, Sendable {
     /// A charge corridor the firmware holds on its own.
     ///
     /// Preferred over the software gate wherever both exist, because it keeps the
-    /// limit through sleep, through a restart and through a crash — the whole
-    /// class of failure the gate has to be defended against. On MacBookPro17,1
-    /// this arrived in the same firmware update that took `CHTE` away.
+    /// limit through sleep, through a daemon restart and through a crash — most
+    /// of the class of failure the gate has to be defended against. A reboot
+    /// does clear it, measured 2026-10-22, so the daemon writes it again at
+    /// startup. On MacBookPro17,1 this arrived in the same firmware update that
+    /// took `CHTE` away.
     public let firmwareLimit: FirmwareChargeLimit
     /// Firmware-enforced 80 % limit under `CHWA`. Absent on MacBookPro17,1, and
     /// not the same thing as `firmwareLimit`: this one is a fixed 80 % with no

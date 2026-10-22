@@ -178,6 +178,21 @@ func runFirmwareLimitPolicyTests() {
         expectEqual(decision.reason.code, "firmwareCorridorDrifted")
     }
 
+    test("a corridor cleared by a reboot is written again at startup") {
+        // Measured 2026-10-22: a reboot zeroes all three keys, so this is the
+        // state every boot starts in. It is also why the daemon writes the
+        // corridor at startup instead of trusting what it finds — and why a
+        // machine with no daemon installed charges to 100 % after a reboot,
+        // which is exactly what happened on the measurement.
+        let decision = FirmwareLimitPolicy.decide(
+            config: config,
+            observed: FirmwareLimitState(isActive: false, upper: 0, lower: 0),
+            activity: .charging
+        )
+        expectTrue(decision.requiresWrite)
+        expectEqual(decision.plan, .hold(lower: 75, upper: 80))
+    }
+
     test("drift is repaired before anything is said about charging") {
         // Order matters: a corridor that is not the one asked for is not
         // enforcing the limit, whatever the charger happens to be doing.

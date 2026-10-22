@@ -40,9 +40,11 @@ SAFETY
   Firmware corridor — the limit is held by the firmware:
     it is deliberately left in place when this process exits, because it is the
     limit working and clearing it would make charge limiting lapse on every
-    restart. `make uninstall` clears it. The firmware charges on its own below
-    the corridor's lower bound, so a corridor left behind cannot flatten the
-    battery — but it can keep it near the lower bound indefinitely.
+    restart. `make uninstall` clears it, and so does a reboot — measured, so the
+    worst case is still bounded by one restart. The firmware charges on its own
+    below the corridor's lower bound, so a corridor left behind cannot flatten
+    the battery — but it can keep it near the lower bound until something clears
+    it.
 """
 
 let log = Logger(subsystem: "com.dranik.battery", category: "Startup")

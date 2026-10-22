@@ -29,10 +29,10 @@ word for it.
 There are two ways a Mac can hold the limit, and the daemon picks by probing
 rather than by model or OS version:
 
-| | Held by | Survives sleep and restarts | Keys |
-|---|---|---|---|
-| **Firmware corridor** | the firmware | yes | `bfF0`, `bfD0`, `bfE0` |
-| **Software gate** | this daemon | no — hence most of the safety machinery | `CHTE`, or `CH0B`/`CH0C` |
+| | Held by | Holds through sleep | Survives a reboot | Keys |
+|---|---|---|---|---|
+| **Firmware corridor** | the firmware | yes | no — the daemon writes it again at startup | `bfF0`, `bfD0`, `bfE0` |
+| **Software gate** | this daemon | no — hence most of the safety machinery | no | `CHTE`, or `CH0B`/`CH0C` |
 
 Apple's firmware update shipped as `mBoot-20457` (in the macOS 14.8.9, 15.8 and
 26.7 security updates) removed the software gate and introduced the firmware
@@ -203,12 +203,20 @@ whatever is or is not running. What it can do is outlive the software — so:
   come down to it. The interface says so, because a plugged-in Mac that is
   discharging otherwise reads as a fault.
 
+- **A reboot clears the corridor** — measured, the same as the gate. So the
+  worst case for any bug here is still bounded by one restart. The cost is that
+  charging is unrestricted from the reboot until the daemon starts and writes the
+  corridor again, which is why it writes it at startup rather than trusting what
+  it finds.
+
 **One thing to expect.** The firmware measures the corridor against the battery
-gauge's own state of charge, and macOS displays a smoothed figure a few points
-higher — 79 against 83 on this machine. So a Mac told to stop at 80 settles at
-82–83 and stays there. This is not compensated for: the offset moves with charge
-history, so writing 77 to land on 80 would be a guess that drifts. `dranik
-status` prints both figures, and the popover says why they differ.
+gauge's own state of charge, and macOS displays a smoothed figure that can sit a
+few points higher — 83 against the gauge's 79 while coming down from full,
+settling to 80 against 79 after a week inside the corridor. So the figure on
+screen may read above the limit for a while. This is not compensated for: the
+offset moves with charge history, so writing 77 to land on 80 would be a guess
+that drifts. `dranik status` prints both figures, and the popover says why they
+differ.
 
 ### The software gate
 
@@ -237,8 +245,7 @@ If something goes wrong:
 ```bash
 dranik off              # stop limiting — clears the corridor, or opens the gate
 sudo make uninstall     # remove it entirely, clearing both first
-sudo reboot             # clears the gate; whether it clears the corridor is not
-                        # yet measured, so check with `dranik status` afterwards
+sudo reboot             # clears the SMC regardless — gate and corridor both
 ```
 
 ## How it works
@@ -294,7 +301,7 @@ the app, or 0.02 % of one core.
 
 ```bash
 make build
-make test              # 281 tests, 883 assertions
+make test              # 282 tests, 885 assertions
 make ui-drill          # the app against a daemon that misbehaves on purpose
 make ui-snapshots      # render every popover state to PNG, light and dark
 make daemon-dry-run    # the whole decision cycle, writing nothing

@@ -16,8 +16,10 @@ public enum DaemonMode: Equatable, Sendable {
     /// that it still says what was asked for.
     ///
     /// Preferred over `.limiting` wherever both are available: the firmware keeps
-    /// the limit through sleep, through a restart and through a crash, so most of
-    /// what the software gate needs defending against stops existing.
+    /// the limit through sleep, through a daemon restart and through a crash, so
+    /// most of what the software gate needs defending against stops existing.
+    /// A reboot clears it — measured 2026-10-22, the same as the gate — which is
+    /// why startup writes it again rather than trusting what it finds.
     case firmwareLimiting
     /// A software charge gate was recognised. The daemon holds the corridor
     /// itself, decision by decision.
