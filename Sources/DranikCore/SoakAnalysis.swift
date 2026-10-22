@@ -69,6 +69,13 @@ public struct SoakAnalysis: Equatable, Sendable {
     public var wakes = 0
     public var unannouncedSleeps = 0
     public var writeFailures = 0
+    /// Times the daemon stopped on a signal, having said so on the way out.
+    ///
+    /// Counted so that restarts can be explained rather than merely tallied: a
+    /// stop the daemon announced is `launchctl bootout` — which is what
+    /// installing does — and not whatever "something else is ending it" would
+    /// send someone looking for.
+    public var cleanShutdowns = 0
     public var firstAt: Date?
     public var lastAt: Date?
 
@@ -89,10 +96,18 @@ public struct SoakAnalysis: Equatable, Sendable {
             if result.firstAt == nil { result.firstAt = record.timestamp }
             result.lastAt = record.timestamp
             if message.contains("dranikd running") { result.restarts += 1 }
+            if message.contains("shutting down") { result.cleanShutdowns += 1 }
             if message.contains("presumed stuck") { result.watchdogStalls += 1 }
             if message.contains("no charge-gate key") { result.limitingUnavailable = true }
             if message.contains("held by the firmware") { result.firmwareLimiting = true }
-            if message.contains("putting it back") { result.corridorRepairs += 1 }
+            // Counted from the actuator's own line rather than from the decision
+            // that led to it, because one attempt can produce two decision lines
+            // — the drift that prompted it and the state found afterwards — and
+            // "the corridor was rewritten twice" for one write is a figure that
+            // sends someone looking for a second writer.
+            if message.contains("setting the firmware corridor to") {
+                result.corridorRepairs += 1
+            }
             if message.contains("the firmware refused the corridor") { result.corridorRefusals += 1 }
             if message.contains("firmware corridor could not be read") {
                 result.corridorUnreadable += 1
@@ -231,11 +246,21 @@ public struct SoakAnalysis: Equatable, Sendable {
         }
 
         // Restarts beyond the first are launchd bringing the daemon back, which
-        // it only does after a non-zero exit.
-        if restarts > 1 && watchdogStalls == 0 {
+        // it only does after a non-zero exit — *unless* something stopped it on
+        // purpose. `make install` boots the service out and back, and the daemon
+        // says so on the way down, so a restart with a matching announced stop
+        // is explained and not worth a concern. Without this, installing twice
+        // reported "something else is ending it" about this project's own
+        // install script.
+        let unexplainedRestarts = max(0, restarts - 1 - cleanShutdowns)
+        if unexplainedRestarts > 0 && watchdogStalls == 0 {
             found.append(Concern(
                 severity: .worthNoting,
-                text: "the daemon started \(restarts) times with no watchdog firing — something else is ending it"
+                text: """
+                the daemon started \(restarts) times, \(unexplainedRestarts) of them with \
+                neither a watchdog firing nor a stop it announced — something else is \
+                ending it
+                """
             ))
         }
 

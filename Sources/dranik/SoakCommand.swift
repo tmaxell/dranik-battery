@@ -156,7 +156,7 @@ enum SoakCommand {
 
         if let coverageNote {
             lines.append("")
-            lines.append("  " + coverageNote)
+            lines.append("  " + wrap(coverageNote, indent: 2))
         }
 
         lines.append("")
@@ -190,7 +190,11 @@ enum SoakCommand {
         return hours > 0 ? "\(hours) h \(minutes) min" : "\(minutes) min"
     }
 
-    private static func wrap(_ text: String) -> String {
+    /// Wraps at 68 columns, continuing at `indent` spaces.
+    ///
+    /// Five by default, which is where a concern's text starts after its "  !! "
+    /// marker. A line with no marker needs two, or the continuation hangs.
+    private static func wrap(_ text: String, indent: Int = 5) -> String {
         var lines: [String] = []
         var current = ""
         for word in text.split(separator: " ") {
@@ -202,7 +206,7 @@ enum SoakCommand {
             }
         }
         if !current.isEmpty { lines.append(current) }
-        return lines.joined(separator: "\n     ")
+        return lines.joined(separator: "\n" + String(repeating: " ", count: indent))
     }
 
     private static func row(_ label: String, _ value: String) -> String {

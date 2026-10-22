@@ -214,6 +214,52 @@ func runSoakFirmwareTests() {
         expectTrue(analysis.concerns.contains { $0.severity == .serious })
     }
 
+    test("one corridor write counts once, however many lines it produced") {
+        // A single attempt writes the drift that prompted it and then the state
+        // found afterwards, so counting decisions reported two rewrites for one
+        // write — a figure that sends someone hunting for a second writer.
+        let analysis = SoakAnalysis.analyse([
+            banner,
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "firmware corridor is off, not the 75–80% asked for — putting it back"
+            ),
+            DaemonLogRecord(
+                timestamp: Date(), category: "FirmwareLimit",
+                message: "setting the firmware corridor to 75–80% (startup)"
+            ),
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "firmware corridor is off, not the 75–80% asked for — putting it back"
+            ),
+        ])
+        expectEqual(analysis.corridorRepairs, 1)
+    }
+
+    test("a restart the daemon announced is not blamed on something else") {
+        // `make install` boots the service out and back, and the daemon says so
+        // on the way down. Without matching the two, installing twice reported
+        // "something else is ending it" about this project's own install script.
+        let analysis = SoakAnalysis.analyse([
+            banner,
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "shutting down (signal 15) — the firmware keeps the corridor"
+            ),
+            banner,
+        ])
+        expectEqual(analysis.restarts, 2)
+        expectEqual(analysis.cleanShutdowns, 1)
+        expectTrue(analysis.concerns.isEmpty, analysis.concerns.map(\.text).joined(separator: "; "))
+    }
+
+    test("a restart with no stop announced is still called out") {
+        let analysis = SoakAnalysis.analyse([banner, banner, banner])
+        expectEqual(analysis.restarts, 3)
+        expectEqual(analysis.cleanShutdowns, 0)
+        expectTrue(analysis.concerns.contains { $0.text.contains("something else is ending it") })
+    }
+
     test("a corridor that had to be rewritten is worth noting") {
         // It is meant to stay put: it held for 2 days 20 hours untouched when
         // measured. A repair means something else writes those keys, which is
@@ -221,8 +267,8 @@ func runSoakFirmwareTests() {
         let analysis = SoakAnalysis.analyse([
             banner,
             DaemonLogRecord(
-                timestamp: Date(), category: "Daemon",
-                message: "firmware corridor is off, not the 75–80% asked for — putting it back"
+                timestamp: Date(), category: "FirmwareLimit",
+                message: "setting the firmware corridor to 75–80% (safety net)"
             ),
         ])
         expectEqual(analysis.corridorRepairs, 1)
