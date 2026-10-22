@@ -221,6 +221,21 @@ public enum MenuBarPresentation {
                 "Charging went past it anyway. The firmware is not honouring it.",
                 icon: .warning, tone: .alarm
             )
+        case "firmwareComingDown":
+            // Its own state because the machine visibly behaves unlike any of
+            // the others: plugged in and discharging. Without a sentence for it,
+            // "Holding at 80 %" while the figure reads 100 % looks like a bug.
+            //
+            // Here rather than below the battery, because it needs nothing from
+            // it: the daemon decided this from the charger's own flags, and an
+            // unreadable charge should not turn it into "Limiting to 80 %" —
+            // which is what it did, and which is how it came to be drilled on a
+            // CI runner that has no battery at all.
+            return summary(
+                "Coming down to \(report.upperLimit) %",
+                "Above the limit, so the Mac runs on battery until it gets there.",
+                icon: .holding
+            )
         default:
             break
         }
@@ -265,15 +280,6 @@ public enum MenuBarPresentation {
                 "Charging — below the \(ChargeConfig.emergencyFloor) % floor",
                 "The limit does not apply this low.",
                 icon: .chargingToLimit
-            )
-        case "firmwareComingDown":
-            // Its own state because the machine visibly behaves unlike any of
-            // the others: plugged in and discharging. Without a sentence for it,
-            // "Holding at 80 %" at 100 % reads as a bug.
-            return summary(
-                "Coming down to \(report.upperLimit) %",
-                "Above the limit, so the Mac runs on battery until it gets there.",
-                icon: .holding
             )
         default:
             break
