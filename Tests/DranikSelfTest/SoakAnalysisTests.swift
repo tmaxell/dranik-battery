@@ -284,9 +284,12 @@ func runSoakFirmwareTests() {
         expectFalse(analysis.isHealthy)
     }
 
-    test("a dry run is not counted as the service restarting") {
-        // `make daemon-dry-run` used to add a restart each time, which then read
-        // as "something else is ending it".
+    test("a rehearsal counts as nothing at all") {
+        // Found by running the tool: eighteen dry-run decisions were reported as
+        // "the corridor was rewritten 18 time(s)" when nothing had been written,
+        // and each dry run also added a restart, which read as "something else
+        // is ending it". A dry run decides out loud and touches no hardware, so
+        // none of it is behaviour.
         let analysis = SoakAnalysis.analyse([
             banner,
             DaemonLogRecord(
@@ -294,9 +297,35 @@ func runSoakFirmwareTests() {
                 message: "dranikd running (DRY RUN — no SMC writes), limit 75–80%,"
                     + " held by the firmware via bfF0+bfD0+bfE0"
             ),
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "firmware corridor is off, not the 75–80% asked for —"
+                    + " putting it back (startup) [DRY RUN]"
+            ),
+            DaemonLogRecord(
+                timestamp: Date(), category: "FirmwareLimit",
+                message: "setting the firmware corridor to 75–80% (startup) [DRY RUN]"
+            ),
         ])
         expectEqual(analysis.restarts, 1, "only the real one counts")
+        expectEqual(analysis.corridorRepairs, 0, "nothing was written, so nothing was repaired")
         expectTrue(analysis.isHealthy)
+    }
+
+    test("a rehearsal does not stretch the window it is reported over") {
+        // Dropped before the timestamps, not after: a dry run an hour ago must
+        // not make a quiet window look like an hour of records.
+        let old = Date(timeIntervalSince1970: 1_000_000)
+        let recent = Date(timeIntervalSince1970: 1_003_600)
+        let analysis = SoakAnalysis.analyse([
+            DaemonLogRecord(
+                timestamp: old, category: "Daemon",
+                message: "dranikd running (DRY RUN — no SMC writes), limit 75–80%"
+            ),
+            DaemonLogRecord(timestamp: recent, category: "Daemon", message: "dranikd running"),
+        ])
+        expectEqual(analysis.firstAt, recent)
+        expectEqual(analysis.duration, 0)
     }
 
     test("gate records and firmware records do not count as each other") {

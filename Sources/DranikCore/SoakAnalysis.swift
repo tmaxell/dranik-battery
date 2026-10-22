@@ -77,16 +77,18 @@ public struct SoakAnalysis: Equatable, Sendable {
     public static func analyse(_ records: [DaemonLogRecord]) -> SoakAnalysis {
         var result = SoakAnalysis()
         for record in records {
+            let message = record.message
+
+            // A dry run is a rehearsal: it decides out loud and writes nothing.
+            // Counting it reported "the corridor was rewritten 18 times" for
+            // eighteen decisions that touched no hardware, and before that a
+            // restart for every `make daemon-dry-run`. Dropped before the
+            // timestamps too, so a rehearsal cannot stretch the window either.
+            if message.contains("DRY RUN") { continue }
+
             if result.firstAt == nil { result.firstAt = record.timestamp }
             result.lastAt = record.timestamp
-
-            let message = record.message
-            // A dry run is somebody watching the daemon decide, not launchd
-            // bringing the service back. Counting it produced "something else is
-            // ending it" for every `make daemon-dry-run`.
-            if message.contains("dranikd running") && !message.contains("DRY RUN") {
-                result.restarts += 1
-            }
+            if message.contains("dranikd running") { result.restarts += 1 }
             if message.contains("presumed stuck") { result.watchdogStalls += 1 }
             if message.contains("no charge-gate key") { result.limitingUnavailable = true }
             if message.contains("held by the firmware") { result.firmwareLimiting = true }

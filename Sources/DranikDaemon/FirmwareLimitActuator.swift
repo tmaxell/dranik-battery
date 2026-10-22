@@ -73,9 +73,13 @@ final class FirmwareLimitActuator {
                 (spec.activation, [FirmwareLimitSpec.activeByte], spec.activationInfo,
                  "activate"),
             ]
+            // The marker is load-bearing: `dranik soak` drops every record
+            // carrying it, so a rehearsal cannot be counted as the corridor
+            // having been rewritten.
             log.notice("""
             setting the firmware corridor to \(lower, privacy: .public)–\
-            \(upper, privacy: .public)% (\(reason, privacy: .public))
+            \(upper, privacy: .public)% (\(reason, privacy: .public))\
+            \(self.dryRun ? " [DRY RUN]" : "", privacy: .public)
             """)
             for (key, bytes, info, what) in steps {
                 guard write(key, bytes, info, what: what) else {

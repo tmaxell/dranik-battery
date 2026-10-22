@@ -337,10 +337,15 @@ public final class Daemon {
             config: config, observed: firmwareActuator.read(), activity: activity
         )
 
+        // Every decision line on this path carries the marker when nothing is
+        // being written, because `dranik soak` reads these lines back and must
+        // not count a rehearsal as something the machine did.
+        let rehearsal = dryRun ? " [DRY RUN]" : ""
+
         if decision.requiresWrite {
             log.notice("""
             \(decision.reason.description, privacy: .public) \
-            (\(trigger, privacy: .public))
+            (\(trigger, privacy: .public))\(rehearsal, privacy: .public)
             """)
             if firmwareActuator.apply(decision.plan, reason: trigger) {
                 // Decide again from what the firmware now reports, so the report
@@ -361,11 +366,13 @@ public final class Daemon {
 
         if decision.reason.code != lastReasonCode {
             if decision.reason.isFault {
-                log.fault("\(decision.reason.description, privacy: .public)")
+                log.fault("""
+                \(decision.reason.description, privacy: .public)\(rehearsal, privacy: .public)
+                """)
             } else {
                 log.notice("""
                 \(decision.reason.description, privacy: .public) \
-                (\(trigger, privacy: .public))
+                (\(trigger, privacy: .public))\(rehearsal, privacy: .public)
                 """)
             }
         }
