@@ -14,18 +14,20 @@ public final class Daemon {
     /// notification that never arrives, not the primary mechanism — at a minute
     /// it would be a poor limiter on its own.
     public static let safetyNetInterval: TimeInterval = 60
-    /// How often the firmware path re-reads the corridor with nothing prompting
-    /// it.
+    /// How long after writing the corridor to look again at what the charger did.
     ///
-    /// Ten times the gate path's interval, and the gap is the difference between
-    /// the two mechanisms. The gate needs re-deciding, so a missed event costs
-    /// enforcement. The corridor needs nothing — measured holding for 2 days and
-    /// 20 hours without being touched — and this timer exists only to notice
-    /// something *else* writing those keys. Power events, wake and config
-    /// changes already cover every moment someone is using the machine, so at a
-    /// minute this would be 1440 checks a day for an event that happened zero
-    /// times. Principle VII: a timer has to justify its own cost.
-    public static let firmwareSafetyNetInterval: TimeInterval = 600
+    /// `ChargeGateTiming.observedEffectLatency` is 7 seconds, measured; this
+    /// leaves a margin on it. The point is that the hardware's reaction is
+    /// announced by nothing at all — the same silence that made the menu bar go
+    /// stale in phase 2 — so without a deliberate second look the report keeps
+    /// whatever it concluded in the instant before the firmware acted.
+    ///
+    /// Observed on 2026-10-22, immediately after the first real install: the
+    /// corridor was written, the charger went to `inhibited` and −583 mA within
+    /// seconds, and `dranik daemon` went on saying "plugged in and not charging,
+    /// for reasons that are not the limit". With the safety net at ten minutes
+    /// that is how long a working limit can look like an unexplained one.
+    public static let firmwareWriteFollowUp: TimeInterval = 12
     /// After waking, the machine reports transient nonsense for a while. Nothing
     /// is closed during this window; opening is still allowed.
     public static let postWakeSettle: TimeInterval = 30
@@ -55,6 +57,8 @@ public final class Daemon {
     private var controllerState = ControllerState()
     private var monitor: PowerEventMonitor?
     private var safetyNet: DispatchSourceTimer?
+    /// One-shot, armed after a corridor write. See `scheduleFirmwareFollowUp`.
+    private var firmwareFollowUp: DispatchSourceTimer?
     private var signalSources: [DispatchSourceSignal] = []
     private var sleepDetector = SleepDetector()
     private var lastReason = "starting up"
@@ -308,16 +312,20 @@ public final class Daemon {
         }
     }
 
-    /// Re-reads the corridor on a long interval.
+    /// Re-reads the corridor and what the charger is doing about it.
     ///
-    /// Distinct from the gate's safety net, which exists because a decision may
-    /// have been missed. Nothing here needs re-deciding; what this catches is
-    /// the corridor being changed by something that is not us.
+    /// The same minute as the gate path, and the reason is the same: the moment
+    /// charging actually stops is announced by nothing. This was briefly ten
+    /// minutes, on the argument that a corridor measured holding for 2 days and
+    /// 20 hours needs no watching — which was true of the corridor and wrong
+    /// about the report, because this timer refreshes both. A limit that works
+    /// then looked unexplained for up to ten minutes. The cost of a minute is
+    /// what the gate path already pays, and the daemon's measured idle cost was
+    /// 1.6 seconds of CPU a day with it.
     private func startFirmwareSafetyNet() {
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(
-            deadline: .now() + Self.firmwareSafetyNetInterval,
-            repeating: Self.firmwareSafetyNetInterval
+            deadline: .now() + Self.safetyNetInterval, repeating: Self.safetyNetInterval
         )
         timer.setEventHandler { [weak self] in
             self?.evaluateFirmware(trigger: "safety net")
@@ -357,6 +365,9 @@ public final class Daemon {
                     observed: firmwareActuator.read(),
                     activity: activity
                 )
+                // The keys are right immediately; the charger is not. Come back
+                // once it has had time to act, because nothing will announce it.
+                scheduleFirmwareFollowUp()
             } else {
                 decision = FirmwareLimitDecision(
                     plan: decision.plan, requiresWrite: false, reason: .writeFailed
@@ -392,6 +403,24 @@ public final class Daemon {
         }
 
         publishReport()
+    }
+
+    /// Looks again shortly after a corridor write, once the charger has had time
+    /// to act on it.
+    ///
+    /// One-shot and replaceable: a second write before it fires cancels the
+    /// first, because only the latest write is worth following up.
+    private func scheduleFirmwareFollowUp() {
+        firmwareFollowUp?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + Self.firmwareWriteFollowUp)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.firmwareFollowUp = nil
+            self.evaluateFirmware(trigger: "after the corridor was set")
+        }
+        timer.resume()
+        firmwareFollowUp = timer
     }
 
     /// Turns a battery reading into what the charger is doing.
@@ -516,6 +545,7 @@ public final class Daemon {
         control?.stop()
         watchdog.stop()
         safetyNet?.cancel()
+        firmwareFollowUp?.cancel()
         monitor?.stop()
 
         guard mode.restoresOnExit else {
