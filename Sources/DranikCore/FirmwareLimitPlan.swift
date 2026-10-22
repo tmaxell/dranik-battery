@@ -114,6 +114,14 @@ public enum FirmwareLimitReason: Equatable, Sendable, CustomStringConvertible {
     case corridorDrifted(wanted: FirmwareLimitPlan, found: FirmwareLimitState)
     case corridorUnreadable
     case writeFailed
+    /// The corridor reads back exactly as asked, and the machine is charging
+    /// above it anyway.
+    ///
+    /// The one thing reading the keys cannot tell you. `SMCConnection.write`
+    /// says so itself: a matching read-back proves the key holds the value and
+    /// nothing more. The gate path answers this with the charger's own flag
+    /// after every write; this is the firmware path's version of that question.
+    case notEnforcing(upper: Int, gauge: Int)
 
     public var code: String {
         switch self {
@@ -129,6 +137,7 @@ public enum FirmwareLimitReason: Equatable, Sendable, CustomStringConvertible {
         case .corridorDrifted: return "firmwareCorridorDrifted"
         case .corridorUnreadable: return "firmwareCorridorUnreadable"
         case .writeFailed: return "firmwareWriteFailed"
+        case .notEnforcing: return "firmwareNotEnforcing"
         }
     }
 
@@ -164,13 +173,18 @@ public enum FirmwareLimitReason: Equatable, Sendable, CustomStringConvertible {
             return "firmware corridor could not be read"
         case .writeFailed:
             return "the firmware refused the corridor — charging is not being limited"
+        case .notEnforcing(let upper, let gauge):
+            // Names the gauge figure rather than the displayed one, because this
+            // is a statement about the scale the firmware itself counts on.
+            return "the \(upper)% corridor is set and the battery is charging anyway "
+                + "at \(gauge)% — the firmware is not enforcing it"
         }
     }
 
     /// Whether this is a state someone needs to do something about.
     public var isFault: Bool {
         switch self {
-        case .corridorUnreadable, .writeFailed: return true
+        case .corridorUnreadable, .writeFailed, .notEnforcing: return true
         case .chargingToLimit, .heldAtLimit, .comingDownToLimit, .onBattery,
              .pluggedInNotCharging, .limitingDisabled, .corridorDrifted:
             return false
@@ -201,10 +215,15 @@ public struct FirmwareLimitDecision: Equatable, Sendable {
 /// — does it still say what the configuration asks for, and what is the charger
 /// doing about it.
 public enum FirmwareLimitPolicy {
+    /// - Parameter gaugeCharge: the battery gauge's own state of charge, which is
+    ///   the scale the firmware enforces against — not the figure macOS shows.
+    ///   `nil` where it could not be read, which only costs the confirmation
+    ///   below; everything else is decided without it.
     public static func decide(
         config: ChargeConfig,
         observed: FirmwareLimitState?,
-        activity: FirmwareChargeActivity
+        activity: FirmwareChargeActivity,
+        gaugeCharge: Int? = nil
     ) -> FirmwareLimitDecision {
         let plan = FirmwareLimitPlan.forConfig(config)
 
@@ -227,6 +246,19 @@ public enum FirmwareLimitPolicy {
 
         guard let upper = plan.upper else {
             return FirmwareLimitDecision(plan: plan, requiresWrite: false, reason: .limitingDisabled)
+        }
+
+        // Charging while already past the corridor is the one unambiguous proof
+        // that the corridor is not being honoured — the keys say one thing and
+        // the current says another. Checked before anything calmer is reported,
+        // and only against the gauge's own figure: the displayed percentage sits
+        // above it often enough that using it here would cry wolf.
+        if let gaugeCharge, gaugeCharge > upper, activity == .charging {
+            return FirmwareLimitDecision(
+                plan: plan,
+                requiresWrite: false,
+                reason: .notEnforcing(upper: upper, gauge: gaugeCharge)
+            )
         }
 
         let reason: FirmwareLimitReason

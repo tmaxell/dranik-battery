@@ -77,6 +77,18 @@ public struct FirmwareLimitSpec: Equatable, Sendable {
     public var keys: [SMCKey] { [activation, upper, lower] }
 }
 
+/// The battery gauge's own state of charge.
+///
+/// A separate figure from the one macOS displays, and the one that matters here:
+/// the firmware enforces its corridor against this. Measured 2026-10-15 at 79
+/// against a displayed 83, and 2026-10-22 at 80 against 84 — the gap moves with
+/// charge history, which `BatterySnapshot.percentage` already documents at
+/// length. Anything comparing a charge against the corridor has to use this one,
+/// or it will decide the limit is broken whenever the two disagree.
+public enum BatteryGauge {
+    public static let stateOfCharge = SMCKey("BRSC")!
+}
+
 /// Whether this machine can hand the corridor to its firmware.
 public enum FirmwareChargeLimit: Equatable, Sendable {
     case supported(FirmwareLimitSpec)

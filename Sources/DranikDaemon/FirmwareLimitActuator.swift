@@ -50,6 +50,20 @@ final class FirmwareLimitActuator {
         )
     }
 
+    /// The battery gauge's own state of charge, or `nil` if it could not be
+    /// read.
+    ///
+    /// Read here rather than taken from the battery snapshot because the two are
+    /// different numbers, and this is the one the firmware measures its corridor
+    /// against. Not an error when absent: everything except the confirmation
+    /// that the corridor is being honoured is decided without it.
+    func gaugeCharge() -> Int? {
+        guard let reading = try? smc.read(BatteryGauge.stateOfCharge),
+              let value = reading.value.doubleValue
+        else { return nil }
+        return Int(value)
+    }
+
     /// Hands `plan` to the firmware, in the order the firmware requires.
     ///
     /// Deactivate first, then the bounds, then activate: the corridor is never

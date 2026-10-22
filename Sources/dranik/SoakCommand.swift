@@ -137,6 +137,7 @@ enum SoakCommand {
             lines.append(row("Limit held by", "the firmware"))
             lines.append(row("Corridor rewritten", "\(analysis.corridorRepairs) time(s)"))
             lines.append(row("Corridor refused", "\(analysis.corridorRefusals) time(s)"))
+            lines.append(row("Corridor ignored", "\(analysis.corridorIgnored) time(s)"))
             lines.append(row("Corridor unreadable", "\(analysis.corridorUnreadable) time(s)"))
         } else {
             lines.append(row("Gate closed", "\(analysis.gateClosures) time(s)"))
