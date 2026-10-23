@@ -360,7 +360,13 @@ public final class Daemon {
 
         let snapshot = try? PowerReader.snapshot()
         let activity = Self.activity(from: snapshot)
-        let gauge = firmwareActuator.gaugeCharge()
+        // Only when it can change the answer. The gauge feeds one check — "the
+        // corridor is set and the battery charged past it anyway" — which can
+        // only be true while charging. Measured at 0.363 ms a read against
+        // 1.86 ms for the whole pass, and the pass runs every minute of every
+        // day, so reading it in the other four states is a fifth of the cost of
+        // this path spent on a figure nothing looks at.
+        let gauge = activity == .charging ? firmwareActuator.gaugeCharge() : nil
         var decision = FirmwareLimitPolicy.decide(
             config: config,
             observed: firmwareActuator.read(),
@@ -387,7 +393,16 @@ public final class Daemon {
                     config: config,
                     observed: firmwareActuator.read(),
                     activity: activity,
-                    gaugeCharge: gauge
+                    // No gauge on this pass, deliberately, which switches the
+                    // "is it being honoured" confirmation off for it. The
+                    // charger has had no time to react — seven seconds,
+                    // measured — and `activity` here was read *before* the
+                    // write, so a machine charging above the corridor would
+                    // report "the firmware is not enforcing it" in the same
+                    // breath as setting it. That is the normal state after a
+                    // reboot, which clears the corridor while the battery is
+                    // charging. The follow-up pass does the confirming.
+                    gaugeCharge: nil
                 )
                 // Accepted by the SMC and still not holding is the firmware
                 // declining the corridor, and it has to read that way. Left as

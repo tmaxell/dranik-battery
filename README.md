@@ -301,14 +301,17 @@ rather than a polling loop. The app is the same, with a safety net of its own â€
 charging stopping at the limit produces no notification at all, so something has
 to ask anyway.
 
-Idle cost, measured: about 1.6 seconds of CPU per day for the daemon and 19 for
-the app, or 0.02 % of one core.
+Idle cost, re-measured on the firmware corridor: about 2 seconds of CPU per day
+for the daemon and 8 for the app. The daemon's figure was 1.6 on the software
+gate and went to 3.8 when the corridor arrived, because each decision read three
+more SMC keys; supplying the descriptors it already had, and reading the battery
+gauge only while charging, brought a decision from 1.77 ms back to 0.73.
 
 ## Development
 
 ```bash
 make build
-make test              # 293 tests, 910 assertions
+make test              # 295 tests, 923 assertions
 make ui-drill          # the app against a daemon that misbehaves on purpose
 make ui-snapshots      # render every popover state to PNG, light and dark
 make daemon-dry-run    # the whole decision cycle, writing nothing

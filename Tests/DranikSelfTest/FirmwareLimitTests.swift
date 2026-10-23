@@ -411,6 +411,44 @@ func runLiveFirmwareLimitTests() {
         )
     }
 
+    test("reading with a known descriptor gives exactly what probing gives") {
+        // The whole basis of the faster path. If these ever disagree, the saving
+        // is not a saving — it is a different answer.
+        guard let smc = try? SMCConnection() else {
+            throw Harness.Skip(reason: "AppleSMC is not available")
+        }
+        defer { smc.close() }
+        let spec = FirmwareLimitSpec.bf0
+        guard ((try? smc.keyInfo(spec.activation)) ?? nil) != nil else {
+            throw Harness.Skip(reason: "no firmware corridor keys exist on this machine")
+        }
+
+        for (key, info) in [
+            (spec.activation, spec.activationInfo),
+            (spec.upper, spec.upperInfo),
+            (spec.lower, spec.lowerInfo),
+        ] {
+            let probed = try expectNotNil((try? smc.read(key)) ?? nil)
+            let assumed = try expectNotNil((try? smc.read(key, assuming: info)) ?? nil)
+            expectEqual(assumed.bytes, probed.bytes, "\(key) disagreed between the two reads")
+            expectEqual(assumed.info, probed.info, "\(key) reported a different descriptor")
+        }
+    }
+
+    test("reading an absent key with a descriptor reports absence, not garbage") {
+        // Skipping the metadata round trip must not turn "the SMC does not know
+        // this key" into a reading of whatever the buffer held.
+        guard let smc = try? SMCConnection() else {
+            throw Harness.Skip(reason: "AppleSMC is not available")
+        }
+        defer { smc.close() }
+        // CH0B has been genuinely absent here since 2026-10-12.
+        let absent = try? smc.read(
+            SMCKey("CH0B")!, assuming: SMCKeyInfo(size: 1, type: "ui8", attributes: 0xD4)
+        )
+        expectNil(absent ?? nil)
+    }
+
     test("a corridor and a gate are never both driven") {
         // The two mechanisms write different keys to mean the same thing, and
         // principle III allows exactly one writer. The mode is what enforces it.
