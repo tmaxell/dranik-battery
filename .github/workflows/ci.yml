@@ -12,7 +12,7 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Printed rather than pinned: the package targets Swift 5.10 tooling and
       # builds under anything newer, so what matters is seeing what ran.
@@ -51,7 +51,7 @@ jobs:
         run: ditto -c -k --keepParent .build/release/Dranik.app Dranik.app.zip
 
       - name: Upload the app
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: Dranik-app
           path: Dranik.app.zip
