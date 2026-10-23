@@ -35,9 +35,12 @@ final class FirmwareLimitActuator {
     /// partial reading compared against a plan would produce a confident wrong
     /// answer about whether to write.
     func read() -> FirmwareLimitState? {
-        guard let activation = try? smc.read(spec.activation),
-              let upper = try? smc.read(spec.upper),
-              let lower = try? smc.read(spec.lower),
+        // Descriptors supplied: these three were validated against the live keys
+        // by `Capabilities.detect`, and this runs every minute for the life of
+        // the machine. Writes still revalidate — see `SMCConnection.read(_:assuming:)`.
+        guard let activation = try? smc.read(spec.activation, assuming: spec.activationInfo),
+              let upper = try? smc.read(spec.upper, assuming: spec.upperInfo),
+              let lower = try? smc.read(spec.lower, assuming: spec.lowerInfo),
               let activationByte = activation.bytes.first
         else {
             log.error("could not read the firmware corridor")
