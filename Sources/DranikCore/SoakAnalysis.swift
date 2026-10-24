@@ -26,6 +26,41 @@ public struct DaemonLogRecord: Equatable, Sendable {
 public struct SoakAnalysis: Equatable, Sendable {
     public var restarts = 0
     public var watchdogStalls = 0
+    /// True when the daemon spent the window unable to limit anything.
+    ///
+    /// Without this the report read "nothing to report — the gate moved when it
+    /// should" on a machine that has no gate, while the battery sat at 100 %
+    /// for six weeks. Silence from a daemon with nothing to do is not health.
+    public var limitingUnavailable = false
+    /// True when the daemon spent the window handing the corridor to the
+    /// firmware rather than driving a gate itself.
+    ///
+    /// Everything else here counts gate events, and on the firmware path there
+    /// are none — no closures, no verifications, no watchdog. Without knowing
+    /// which path was in force, a window of complete silence reads as "nothing
+    /// happened" when in fact nothing *needed* to: the corridor was being held
+    /// by the hardware the whole time. That is the healthy state, and it has to
+    /// be told apart from a daemon that did nothing because it could not.
+    public var firmwareLimiting = false
+    /// Times the corridor was found saying something other than what was asked
+    /// and had to be written again.
+    ///
+    /// Expected to be zero. The corridor held for 2 days 20 hours untouched when
+    /// this was measured, so anything else means something other than this
+    /// daemon is writing those keys.
+    public var corridorRepairs = 0
+    /// Times the firmware refused the corridor outright.
+    public var corridorRefusals = 0
+    /// Times the corridor was set and correct and the battery charged past it
+    /// anyway.
+    ///
+    /// The failure that reading the keys cannot see, which is why it is counted
+    /// separately from a refusal: a refusal is loud at the moment it happens,
+    /// this one is silent and only visible against the charger's own behaviour.
+    public var corridorIgnored = 0
+    /// Times the corridor could not be read, so whether the limit held was not
+    /// knowable.
+    public var corridorUnreadable = 0
     public var verificationFailures = 0
     /// Checks that confirmed the gate did what was asked.
     ///
@@ -41,6 +76,13 @@ public struct SoakAnalysis: Equatable, Sendable {
     public var wakes = 0
     public var unannouncedSleeps = 0
     public var writeFailures = 0
+    /// Times the daemon stopped on a signal, having said so on the way out.
+    ///
+    /// Counted so that restarts can be explained rather than merely tallied: a
+    /// stop the daemon announced is `launchctl bootout` — which is what
+    /// installing does — and not whatever "something else is ending it" would
+    /// send someone looking for.
+    public var cleanShutdowns = 0
     public var firstAt: Date?
     public var lastAt: Date?
 
@@ -49,12 +91,37 @@ public struct SoakAnalysis: Equatable, Sendable {
     public static func analyse(_ records: [DaemonLogRecord]) -> SoakAnalysis {
         var result = SoakAnalysis()
         for record in records {
+            let message = record.message
+
+            // A dry run is a rehearsal: it decides out loud and writes nothing.
+            // Counting it reported "the corridor was rewritten 18 times" for
+            // eighteen decisions that touched no hardware, and before that a
+            // restart for every `make daemon-dry-run`. Dropped before the
+            // timestamps too, so a rehearsal cannot stretch the window either.
+            if message.contains("DRY RUN") { continue }
+
             if result.firstAt == nil { result.firstAt = record.timestamp }
             result.lastAt = record.timestamp
-
-            let message = record.message
             if message.contains("dranikd running") { result.restarts += 1 }
+            if message.contains("shutting down") { result.cleanShutdowns += 1 }
             if message.contains("presumed stuck") { result.watchdogStalls += 1 }
+            if message.contains("no charge-gate key") { result.limitingUnavailable = true }
+            if message.contains("held by the firmware") { result.firmwareLimiting = true }
+            // Counted from the actuator's own line rather than from the decision
+            // that led to it, because one attempt can produce two decision lines
+            // — the drift that prompted it and the state found afterwards — and
+            // "the corridor was rewritten twice" for one write is a figure that
+            // sends someone looking for a second writer.
+            if message.contains("setting the firmware corridor to") {
+                result.corridorRepairs += 1
+            }
+            if message.contains("the firmware refused the corridor") { result.corridorRefusals += 1 }
+            if message.contains("the firmware is not enforcing it") {
+                result.corridorIgnored += 1
+            }
+            if message.contains("firmware corridor could not be read") {
+                result.corridorUnreadable += 1
+            }
             if message.contains("gate check failed") { result.verificationFailures += 1 }
             if message.contains("gate verified") { result.verificationsConfirmed += 1 }
             if message.contains("charge limiting disabled") { result.distrusts += 1 }
@@ -85,6 +152,76 @@ public struct SoakAnalysis: Equatable, Sendable {
 
     public var concerns: [Concern] {
         var found: [Concern] = []
+
+        // First, because every verdict below is about how well some mechanism was
+        // driven, and here there was none to drive.
+        if limitingUnavailable && firmwareLimiting {
+            // Both in one window means the mechanism changed part-way — a
+            // firmware update, or an install picking up a build that recognises
+            // the corridor. Saying "nothing was limited for any of this window"
+            // would then be false for the half that was.
+            found.append(Concern(
+                severity: .worthNoting,
+                text: """
+                the mechanism changed during this window: part of it had no charge \
+                gate at all, and part had the corridor held by the firmware. The \
+                figures above mix the two — narrow the window to read either
+                """
+            ))
+        } else if limitingUnavailable {
+            found.append(Concern(
+                severity: .serious,
+                text: """
+                no charge gate was recognised on this machine, so nothing was \
+                being limited for any of this window — whatever the figures \
+                above say
+                """
+            ))
+        }
+
+        if corridorRefusals > 0 {
+            found.append(Concern(
+                severity: .serious,
+                text: """
+                the firmware refused the charge corridor \(corridorRefusals) time(s) — \
+                each one is a stretch with no limit in force
+                """
+            ))
+        }
+
+        if corridorIgnored > 0 {
+            found.append(Concern(
+                severity: .serious,
+                text: """
+                the corridor was set and correct and the battery charged past it \
+                \(corridorIgnored) time(s) — the firmware is not honouring it, and \
+                nothing about the keys would show that
+                """
+            ))
+        }
+
+        if corridorUnreadable > 0 {
+            found.append(Concern(
+                severity: .worthNoting,
+                text: """
+                the corridor could not be read \(corridorUnreadable) time(s), so whether \
+                the limit held then is not knowable from this window
+                """
+            ))
+        }
+
+        if corridorRepairs > 0 {
+            // Not a failure of ours: the corridor was put back. But it should
+            // never have moved, so a nonzero count means something else writes
+            // these keys — worth knowing before trusting the mechanism further.
+            found.append(Concern(
+                severity: .worthNoting,
+                text: """
+                the corridor had to be written again \(corridorRepairs) time(s) — \
+                it is meant to stay put, so something else is changing it
+                """
+            ))
+        }
 
         if distrusts > 0 {
             found.append(Concern(
@@ -130,11 +267,21 @@ public struct SoakAnalysis: Equatable, Sendable {
         }
 
         // Restarts beyond the first are launchd bringing the daemon back, which
-        // it only does after a non-zero exit.
-        if restarts > 1 && watchdogStalls == 0 {
+        // it only does after a non-zero exit — *unless* something stopped it on
+        // purpose. `make install` boots the service out and back, and the daemon
+        // says so on the way down, so a restart with a matching announced stop
+        // is explained and not worth a concern. Without this, installing twice
+        // reported "something else is ending it" about this project's own
+        // install script.
+        let unexplainedRestarts = max(0, restarts - 1 - cleanShutdowns)
+        if unexplainedRestarts > 0 && watchdogStalls == 0 {
             found.append(Concern(
                 severity: .worthNoting,
-                text: "the daemon started \(restarts) times with no watchdog firing — something else is ending it"
+                text: """
+                the daemon started \(restarts) times, \(unexplainedRestarts) of them with \
+                neither a watchdog firing nor a stop it announced — something else is \
+                ending it
+                """
             ))
         }
 

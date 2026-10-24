@@ -9,7 +9,7 @@ APP_BUNDLE := $(BUILD_DIR)/Dranik.app
 APP_VERSION := $(shell sed -n 's/.*current = "\(.*\)".*/\1/p' Sources/DranikCore/Version.swift)
 AGENT_PLIST := $(HOME)/Library/LaunchAgents/com.dranik.battery.app.plist
 
-.PHONY: all build test test-ci run status dump probe tools clean help install uninstall daemon-dry-run logs gate-dry-run gate-experiment app app-run install-app uninstall-app ui-drill ui-snapshots icon
+.PHONY: all build test test-ci run status dump probe tools clean help install uninstall daemon-dry-run logs gate-dry-run gate-experiment firmware-limit-dry-run firmware-limit-experiment app app-run install-app uninstall-app ui-drill ui-snapshots icon
 
 all: build
 
@@ -115,6 +115,18 @@ gate-dry-run: build
 ## The rollback is armed before the first write. Run it plugged in and charging.
 gate-experiment: build
 	sudo $(BUILD_DIR)/dranik-gate-experiment
+
+## firmware-limit-dry-run: rehearse the firmware charge-limit experiment, writing nothing
+firmware-limit-dry-run: build
+	$(BUILD_DIR)/dranik-firmware-limit-experiment --dry-run
+
+## firmware-limit-experiment: drive the firmware charge limit for real — WRITES TO THE SMC, needs root
+##
+## Writes bfF0/bfD0/bfE0, reads them back twice, then restores what it found.
+## The rollback is armed before the first write. A firmware limit cannot
+## discharge the battery, so what this guards against is a limit left behind.
+firmware-limit-experiment: build
+	sudo $(BUILD_DIR)/dranik-firmware-limit-experiment
 
 ## status: show battery state and charge-control capabilities
 status: build

@@ -146,11 +146,14 @@ case "watch":
     WatchCommand.run()
 
 case "soak":
-    SoakCommand.run(since: {
-        guard let index = arguments.firstIndex(of: "--since"), index + 1 < arguments.count
-        else { return "24h" }
-        return arguments[index + 1]
-    }())
+    SoakCommand.run(
+        since: {
+            guard let index = arguments.firstIndex(of: "--since"), index + 1 < arguments.count
+            else { return "24h" }
+            return arguments[index + 1]
+        }(),
+        socket: socketOption()
+    )
 
 case "daemon":
     ControlCommands.daemonStatus(

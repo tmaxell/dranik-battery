@@ -15,6 +15,11 @@ import Foundation
 // and temperature, which this cannot set, and they are already covered branch by
 // branch in `MenuBarPresentationTests`. What this adds is the wiring those tests
 // cannot reach: socket, decode, presentation, output.
+//
+// That boundary is not a style note. CI runs this on a machine with no battery,
+// where every reading is nil, so a scenario below the boundary renders a
+// different state there than it does here — which is exactly how "coming down to
+// the limit" was added, passed locally, and failed on the runner.
 
 struct Scenario {
     let name: String
@@ -51,12 +56,13 @@ func report(
     gate: String = "closed",
     reasonCode: String = "reachedUpper",
     trusted: Bool = true,
-    supported: Bool = true
+    supported: Bool = true,
+    heldBy: String = DaemonReport.HeldBy.daemon
 ) -> DaemonReport {
     DaemonReport(
         upperLimit: 80, lowerLimit: 75, thermalCutoff: 40, sleepPolicy: "holdLimit",
         gate: gate, reason: "drill", gateIsTrusted: trusted, reasonCode: reasonCode,
-        limitingIsSupported: supported, decidedAt: Date()
+        limitingIsSupported: supported, heldBy: heldBy, decidedAt: Date()
     )
 }
 
@@ -77,9 +83,44 @@ let scenarios = [
         headline: "Not limiting", icon: "warning"
     ),
     Scenario(
-        "hardware with no charge gate",
+        "hardware that cannot be limited at all",
         report: report(gate: "open", supported: false),
-        headline: "This Mac has no charge gate", icon: "warning", controls: "disabled"
+        headline: "This Mac cannot be limited", icon: "warning", controls: "disabled"
+    ),
+    // The firmware path's own failures. They have to look as loud as the gate
+    // losing trust, because they mean the same thing: the daemon is up, looks
+    // healthy, and nothing is holding the battery back.
+    Scenario(
+        "a firmware that refused the corridor",
+        report: report(
+            gate: "open", reasonCode: "firmwareWriteFailed",
+            heldBy: DaemonReport.HeldBy.firmware
+        ),
+        headline: "Not limiting", icon: "warning"
+    ),
+    Scenario(
+        "a firmware corridor that cannot be read back",
+        report: report(
+            gate: "unknown", reasonCode: "firmwareCorridorUnreadable",
+            heldBy: DaemonReport.HeldBy.firmware
+        ),
+        headline: "Not limiting", icon: "warning"
+    ),
+    Scenario(
+        "a corridor that is set, correct, and being ignored",
+        report: report(
+            gate: "open", reasonCode: "firmwareNotEnforcing",
+            heldBy: DaemonReport.HeldBy.firmware
+        ),
+        headline: "Not limiting", icon: "warning"
+    ),
+    Scenario(
+        "a charge above the corridor, coming down on battery",
+        report: report(
+            gate: "closed", reasonCode: "firmwareComingDown",
+            heldBy: DaemonReport.HeldBy.firmware
+        ),
+        headline: "Coming down to 80 %", icon: "holding"
     ),
     Scenario(
         "a socket this user is not allowed to open",

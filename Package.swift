@@ -65,6 +65,16 @@ let package = Package(
             path: "tools/GateExperiment"
         ),
 
+        // The same thing for the firmware charge limit that replaced the gate on
+        // mBoot-20457.1.29. Separate from the product for the same reason, and
+        // the key descriptors live in the tool rather than in `DranikSMC`: until
+        // the change is approved, nothing shipped is able to write them.
+        .executableTarget(
+            name: "dranik-firmware-limit-experiment",
+            dependencies: ["DranikSMC", "DranikPower"],
+            path: "tools/FirmwareLimitExperiment"
+        ),
+
         // Drives the app against a daemon that misbehaves on purpose. A test
         // cannot look at a screen, but it can read back what the app made of a
         // report, which is where the states that matter actually go wrong.

@@ -29,12 +29,34 @@ if [[ ! -x "${BUILD}/dranikd" ]]; then
     exit 1
 fi
 
-# Probe before installing anything. A machine whose charge gate this build does
-# not recognise has nothing to gain from a daemon that will refuse to act.
-if ! "${BUILD}/dranik" status | grep -q "Charge gate .*key"; then
-    echo "no usable charge gate on this machine — not installing" >&2
-    "${BUILD}/dranik" status | sed -n '/Charge control/,$p' >&2
+# Probe before installing anything, and tell two failures apart.
+#
+# An unreadable SMC is fatal: the daemon cannot even start without a connection
+# to it, so there would be nothing to install.
+#
+# No recognised charge gate used to be fatal too, on the grounds that such a
+# machine "has nothing to gain from a daemon that will refuse to act". That
+# stopped being true: the daemon now stays up and keeps saying why nothing is
+# being limited, in the CLI and in the menu bar. Someone whose firmware took the
+# key away needs exactly that answer — and refusing to install denies them the
+# one thing that would give it.
+STATUS="$("${BUILD}/dranik" status 2>&1 || true)"
+
+if echo "${STATUS}" | grep -q "SMC .*unavailable"; then
+    echo "cannot read the SMC on this machine — not installing" >&2
+    echo "${STATUS}" | sed -n '/Charge control/,$p' >&2
     exit 1
+fi
+
+# Either mechanism will do. A machine whose firmware took `CHTE` away may well
+# have the firmware corridor instead — that is what the mBoot-20457 update did —
+# and warning about a missing gate there would be alarming and wrong.
+if ! echo "${STATUS}" | grep -q "Charge gate .*key" \
+   && ! echo "${STATUS}" | grep -qE "Firmware limit +bf"; then
+    echo "WARNING: nothing on this machine that this build can limit charging with." >&2
+    echo "         Installing anyway: the daemon will report why nothing is" >&2
+    echo "         being limited, but it will NOT limit charging." >&2
+    echo "${STATUS}" | sed -n '/Charge control/,$p' >&2
 fi
 
 echo "==> stopping any running instance"

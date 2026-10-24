@@ -81,6 +81,12 @@ public struct MenuBarSummary: Equatable, Sendable {
     public let needsRearming: Bool
     public let upperLimit: Int
     public let lowerLimit: Int
+    /// True when the firmware holds the corridor rather than the daemon.
+    ///
+    /// The interface needs it for one thing: the sleep caveat. "A lidded Mac on a
+    /// charger will not charge overnight" is the most surprising thing about this
+    /// product on the gate path, and simply untrue on the firmware path.
+    public let limitHeldByFirmware: Bool
 
     public init(
         headline: String,
@@ -91,7 +97,8 @@ public struct MenuBarSummary: Equatable, Sendable {
         isLimiting: Bool,
         needsRearming: Bool = false,
         upperLimit: Int,
-        lowerLimit: Int
+        lowerLimit: Int,
+        limitHeldByFirmware: Bool = false
     ) {
         self.headline = headline
         self.detail = detail
@@ -102,6 +109,7 @@ public struct MenuBarSummary: Equatable, Sendable {
         self.needsRearming = needsRearming
         self.upperLimit = upperLimit
         self.lowerLimit = lowerLimit
+        self.limitHeldByFirmware = limitHeldByFirmware
     }
 }
 
@@ -145,6 +153,7 @@ public enum MenuBarPresentation {
         _ report: DaemonReport, _ battery: BatteryFacts?
     ) -> MenuBarSummary {
         let isLimiting = report.upperLimit < 100
+        let byFirmware = report.heldBy == DaemonReport.HeldBy.firmware
 
         func summary(
             _ headline: String,
@@ -163,7 +172,8 @@ public enum MenuBarPresentation {
                 isLimiting: isLimiting,
                 needsRearming: rearm,
                 upperLimit: report.upperLimit,
-                lowerLimit: report.lowerLimit
+                lowerLimit: report.lowerLimit,
+                limitHeldByFirmware: byFirmware
             )
         }
 
@@ -180,10 +190,54 @@ public enum MenuBarPresentation {
 
         if !report.limitingIsSupported {
             return summary(
-                "This Mac has no charge gate",
+                "This Mac cannot be limited",
                 "The daemon is running, but there is nothing here it can limit.",
                 icon: .warning, tone: .caution, controls: false
             )
+        }
+
+        // The firmware path's two ways of failing. Both mean the corridor is not
+        // being enforced, so both rank with the gate losing trust rather than
+        // with anything about charging.
+        switch report.reasonCode {
+        case "firmwareWriteFailed":
+            return summary(
+                "Not limiting — the firmware refused the limit",
+                "Charging is not being held back.",
+                icon: .warning, tone: .alarm
+            )
+        case "firmwareCorridorUnreadable":
+            return summary(
+                "Not limiting — the firmware is not answering",
+                "The charge limit cannot be read, so it cannot be trusted.",
+                icon: .warning, tone: .caution
+            )
+        case "firmwareNotEnforcing":
+            // The limit is set, correct, and being ignored. Loudest of the three
+            // because nothing about it looks wrong from anywhere else: the keys
+            // read back exactly as asked.
+            return summary(
+                "Not limiting — the limit is set but ignored",
+                "Charging went past it anyway. The firmware is not honouring it.",
+                icon: .warning, tone: .alarm
+            )
+        case "firmwareComingDown":
+            // Its own state because the machine visibly behaves unlike any of
+            // the others: plugged in and discharging. Without a sentence for it,
+            // "Holding at 80 %" while the figure reads 100 % looks like a bug.
+            //
+            // Here rather than below the battery, because it needs nothing from
+            // it: the daemon decided this from the charger's own flags, and an
+            // unreadable charge should not turn it into "Limiting to 80 %" —
+            // which is what it did, and which is how it came to be drilled on a
+            // CI runner that has no battery at all.
+            return summary(
+                "Coming down to \(report.upperLimit) %",
+                "Above the limit, so the Mac runs on battery until it gets there.",
+                icon: .holding
+            )
+        default:
+            break
         }
 
         if report.reasonCode == "staleReading" {
@@ -232,7 +286,11 @@ public enum MenuBarPresentation {
         }
 
         if report.gate == GatePosition.closed.rawValue {
-            return summary("Holding at \(report.upperLimit) %", icon: .holding)
+            return summary(
+                "Holding at \(report.upperLimit) %",
+                scaleCaveat(report, battery),
+                icon: .holding
+            )
         }
         if battery.isCharging {
             return summary("Charging to \(report.upperLimit) %", icon: .chargingToLimit)
@@ -240,6 +298,26 @@ public enum MenuBarPresentation {
         // Plugged in, allowed to charge, and not charging: the charger's own
         // business — a full battery, or macOS holding it back for its own reasons.
         return summary("Plugged in — not charging", icon: .holding)
+    }
+
+    /// Explains the gap between the number on screen and the limit beside it.
+    ///
+    /// Measured 2026-10-15: the firmware holds its corridor against the battery
+    /// gauge's own state of charge, and macOS displays a smoothed figure a few
+    /// points higher — 79 against 83. So a Mac told to stop at 80 settles at 83
+    /// and stays there, with both numbers visible in the same popover.
+    ///
+    /// Not compensated for, because the offset moves with charge history (see
+    /// `BatterySnapshot.percentage`): writing 77 to land on 80 would be a guess
+    /// that drifts. Explained instead, and only where it would otherwise look
+    /// like a fault.
+    private static func scaleCaveat(
+        _ report: DaemonReport, _ battery: BatteryFacts
+    ) -> String? {
+        guard report.heldBy == DaemonReport.HeldBy.firmware else { return nil }
+        guard battery.percentage > report.upperLimit else { return nil }
+        return "The firmware counts a little lower than macOS shows, so it "
+            + "settles just above the number you set."
     }
 
     /// The one thing worth saying about the charger, and only when it contradicts

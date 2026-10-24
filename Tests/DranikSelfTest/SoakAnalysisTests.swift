@@ -132,3 +132,276 @@ func runSoakRatioTests() {
         )
     }
 }
+
+/// `soak` handed out a clean bill of health to a machine that had not limited
+/// anything for six weeks: "nothing to report — the gate moved when it should",
+/// on hardware with no gate at all.
+func runSoakLimitingTests() {
+    test("a window where nothing could be limited is not a healthy window") {
+        let records = [
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "no charge-gate key on this machine matched its expected description."
+                    + " Nothing here can limit charging, and nothing will be written."
+            ),
+        ]
+        let analysis = SoakAnalysis.analyse(records)
+        expectTrue(analysis.limitingUnavailable)
+        expectFalse(analysis.isHealthy, "no gate means no verdict about the gate")
+        expectTrue(
+            analysis.concerns.contains { $0.severity == .serious },
+            "and it is serious: the battery is unprotected"
+        )
+    }
+
+    test("the gate figures stay quiet about a window with no gate") {
+        // Zero movements used to read as "it moved when it should". The concern
+        // has to come first so the zeros are never the whole story.
+        let records = [
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "no charge-gate key on this machine"
+            ),
+        ]
+        let analysis = SoakAnalysis.analyse(records)
+        expectEqual(analysis.gateClosures, 0)
+        expectEqual(analysis.gateOpens, 0)
+        expectFalse(analysis.concerns.isEmpty, "zeros must not be reported as calm")
+    }
+
+    test("an ordinary window is still healthy") {
+        let records = [
+            DaemonLogRecord(timestamp: Date(), category: "Gate", message: "gate verified closed"),
+            DaemonLogRecord(timestamp: Date(), category: "SMC", message: "SMC write CHTE: 00000000 -> 01000000"),
+        ]
+        let analysis = SoakAnalysis.analyse(records)
+        expectFalse(analysis.limitingUnavailable)
+        expectTrue(analysis.isHealthy)
+    }
+}
+
+func runSoakFirmwareTests() {
+    /// The one line the firmware path writes when it starts, as the daemon
+    /// actually writes it.
+    let banner = DaemonLogRecord(
+        timestamp: Date(), category: "Daemon",
+        message: "dranikd running, limit 75–80%, held by the firmware via bfF0+bfD0+bfE0"
+    )
+
+    test("a quiet firmware window is recognised as the firmware path, not as idleness") {
+        // Everything else this analysis counts is a gate event, and the firmware
+        // path produces none. Without knowing which path was in force, silence
+        // would read as "nothing happened" on a machine where the hardware was
+        // holding the limit the entire time.
+        let analysis = SoakAnalysis.analyse([banner])
+        expectTrue(analysis.firmwareLimiting)
+        expectFalse(analysis.limitingUnavailable, "the firmware path is not an absent one")
+        expectTrue(analysis.isHealthy)
+        expectEqual(analysis.gateClosures, 0)
+        expectEqual(analysis.verificationsConfirmed, 0)
+    }
+
+    test("a firmware that refuses the corridor is serious") {
+        let analysis = SoakAnalysis.analyse([
+            banner,
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "the firmware refused the corridor — charging is not being limited"
+            ),
+        ])
+        expectEqual(analysis.corridorRefusals, 1)
+        expectFalse(analysis.isHealthy)
+        expectTrue(analysis.concerns.contains { $0.severity == .serious })
+    }
+
+    test("one corridor write counts once, however many lines it produced") {
+        // A single attempt writes the drift that prompted it and then the state
+        // found afterwards, so counting decisions reported two rewrites for one
+        // write — a figure that sends someone hunting for a second writer.
+        let analysis = SoakAnalysis.analyse([
+            banner,
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "firmware corridor is off, not the 75–80% asked for — putting it back"
+            ),
+            DaemonLogRecord(
+                timestamp: Date(), category: "FirmwareLimit",
+                message: "setting the firmware corridor to 75–80% (startup)"
+            ),
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "firmware corridor is off, not the 75–80% asked for — putting it back"
+            ),
+        ])
+        expectEqual(analysis.corridorRepairs, 1)
+    }
+
+    test("a restart the daemon announced is not blamed on something else") {
+        // `make install` boots the service out and back, and the daemon says so
+        // on the way down. Without matching the two, installing twice reported
+        // "something else is ending it" about this project's own install script.
+        let analysis = SoakAnalysis.analyse([
+            banner,
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "shutting down (signal 15) — the firmware keeps the corridor"
+            ),
+            banner,
+        ])
+        expectEqual(analysis.restarts, 2)
+        expectEqual(analysis.cleanShutdowns, 1)
+        expectTrue(analysis.concerns.isEmpty, analysis.concerns.map(\.text).joined(separator: "; "))
+    }
+
+    test("a restart with no stop announced is still called out") {
+        let analysis = SoakAnalysis.analyse([banner, banner, banner])
+        expectEqual(analysis.restarts, 3)
+        expectEqual(analysis.cleanShutdowns, 0)
+        expectTrue(analysis.concerns.contains { $0.text.contains("something else is ending it") })
+    }
+
+    test("a corridor that had to be rewritten is worth noting") {
+        // It is meant to stay put: it held for 2 days 20 hours untouched when
+        // measured. A repair means something else writes those keys, which is
+        // worth knowing before trusting the mechanism further.
+        let analysis = SoakAnalysis.analyse([
+            banner,
+            DaemonLogRecord(
+                timestamp: Date(), category: "FirmwareLimit",
+                message: "setting the firmware corridor to 75–80% (safety net)"
+            ),
+        ])
+        expectEqual(analysis.corridorRepairs, 1)
+        expectTrue(analysis.isHealthy, "it was repaired, so the limit held")
+        expectTrue(analysis.concerns.contains { $0.severity == .worthNoting })
+    }
+
+    test("a corridor charged past is serious, and counted apart from a refusal") {
+        // A refusal is loud at the moment it happens. This one is silent: the
+        // keys read back exactly as asked, and only the charger's behaviour
+        // gives it away. Counting them together would hide which happened.
+        let analysis = SoakAnalysis.analyse([
+            banner,
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "the 80% corridor is set and the battery is charging anyway at 92%"
+                    + " — the firmware is not enforcing it"
+            ),
+        ])
+        expectEqual(analysis.corridorIgnored, 1)
+        expectEqual(analysis.corridorRefusals, 0)
+        expectFalse(analysis.isHealthy)
+        expectTrue(analysis.concerns.contains { $0.severity == .serious })
+    }
+
+    test("a corridor that could not be read is reported rather than assumed well") {
+        let analysis = SoakAnalysis.analyse([
+            banner,
+            DaemonLogRecord(
+                timestamp: Date(), category: "FirmwareLimit",
+                message: "firmware corridor could not be read"
+            ),
+        ])
+        expectEqual(analysis.corridorUnreadable, 1)
+        expectFalse(analysis.concerns.isEmpty)
+    }
+
+    test("a window spanning both mechanisms says so instead of condemning all of it") {
+        // What a real window looks like across an install that starts
+        // recognising the corridor: the old daemon logging no gate, the new one
+        // logging the firmware. "Nothing was limited for any of this window" is
+        // false for the half that was.
+        let analysis = SoakAnalysis.analyse([
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "no charge-gate key on this machine matched its expected description."
+            ),
+            banner,
+        ])
+        expectTrue(analysis.limitingUnavailable)
+        expectTrue(analysis.firmwareLimiting)
+        expectTrue(analysis.isHealthy, "a change of mechanism is not a failure")
+        expectTrue(analysis.concerns.contains { $0.text.contains("mechanism changed") })
+    }
+
+    test("an observing daemon's starts are counted too") {
+        // They were not, because the observing path logged no banner. A daemon
+        // restarting in a loop with nothing to limit then showed zero starts —
+        // the shape of 2026-10-12, invisible to the tool meant to catch it.
+        let analysis = SoakAnalysis.analyse([
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "dranikd running, limit 75–80%, observing only"
+            ),
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "dranikd running, limit 75–80%, observing only"
+            ),
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "no charge-gate key on this machine matched its expected description."
+            ),
+        ])
+        expectEqual(analysis.restarts, 2)
+        expectTrue(analysis.limitingUnavailable)
+        expectFalse(analysis.firmwareLimiting)
+        expectFalse(analysis.isHealthy)
+    }
+
+    test("a rehearsal counts as nothing at all") {
+        // Found by running the tool: eighteen dry-run decisions were reported as
+        // "the corridor was rewritten 18 time(s)" when nothing had been written,
+        // and each dry run also added a restart, which read as "something else
+        // is ending it". A dry run decides out loud and touches no hardware, so
+        // none of it is behaviour.
+        let analysis = SoakAnalysis.analyse([
+            banner,
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "dranikd running (DRY RUN — no SMC writes), limit 75–80%,"
+                    + " held by the firmware via bfF0+bfD0+bfE0"
+            ),
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "firmware corridor is off, not the 75–80% asked for —"
+                    + " putting it back (startup) [DRY RUN]"
+            ),
+            DaemonLogRecord(
+                timestamp: Date(), category: "FirmwareLimit",
+                message: "setting the firmware corridor to 75–80% (startup) [DRY RUN]"
+            ),
+        ])
+        expectEqual(analysis.restarts, 1, "only the real one counts")
+        expectEqual(analysis.corridorRepairs, 0, "nothing was written, so nothing was repaired")
+        expectTrue(analysis.isHealthy)
+    }
+
+    test("a rehearsal does not stretch the window it is reported over") {
+        // Dropped before the timestamps, not after: a dry run an hour ago must
+        // not make a quiet window look like an hour of records.
+        let old = Date(timeIntervalSince1970: 1_000_000)
+        let recent = Date(timeIntervalSince1970: 1_003_600)
+        let analysis = SoakAnalysis.analyse([
+            DaemonLogRecord(
+                timestamp: old, category: "Daemon",
+                message: "dranikd running (DRY RUN — no SMC writes), limit 75–80%"
+            ),
+            DaemonLogRecord(timestamp: recent, category: "Daemon", message: "dranikd running"),
+        ])
+        expectEqual(analysis.firstAt, recent)
+        expectEqual(analysis.duration, 0)
+    }
+
+    test("gate records and firmware records do not count as each other") {
+        let analysis = SoakAnalysis.analyse([
+            DaemonLogRecord(
+                timestamp: Date(), category: "Daemon",
+                message: "dranikd running, limit 75–80%, gate CHTE"
+            ),
+            DaemonLogRecord(timestamp: Date(), category: "Gate", message: "gate verified closed"),
+        ])
+        expectFalse(analysis.firmwareLimiting)
+        expectEqual(analysis.corridorRepairs, 0)
+        expectEqual(analysis.verificationsConfirmed, 1)
+    }
+}

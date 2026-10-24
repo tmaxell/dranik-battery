@@ -12,6 +12,17 @@ struct StatusReport {
     /// Raw readings of the charge-gate keys — the hardware's own answer, not the
     /// daemon's account of it, which is the point of having both commands.
     let gateReadings: [(key: SMCKey, value: String)]
+    /// What the firmware says its own corridor is, when this machine has one.
+    /// Read here rather than asked of the daemon for the same reason as the gate
+    /// readings: this command answers from the hardware.
+    let firmwareLimit: FirmwareLimitState?
+    /// The battery gauge's own state of charge, from `BRSC`.
+    ///
+    /// Worth a line of its own because it is the number the firmware enforces
+    /// its corridor against, and it is not the number macOS displays: 79 against
+    /// 83, measured 2026-10-15. Without it, a Mac told to stop at 80 and sitting
+    /// at 83 has no visible explanation.
+    let gaugeCharge: Int?
     let telemetry: [(label: String, value: String)]
 
     static func gather() throws -> StatusReport {
@@ -20,6 +31,8 @@ struct StatusReport {
         var capabilities: Capabilities?
         var capabilitiesError: String?
         var gateReadings: [(SMCKey, String)] = []
+        var firmwareLimit: FirmwareLimitState?
+        var gaugeCharge: Int?
         var telemetry: [(String, String)] = []
 
         do {
@@ -29,10 +42,25 @@ struct StatusReport {
             let detected = try Capabilities.detect(using: smc)
             capabilities = detected
 
-            for key in detected.chargeGate.keys {
+            for key in detected.chargeGate.keys + detected.firmwareLimit.keys {
                 if let reading = try smc.read(key) {
                     gateReadings.append((key, reading.value.description))
                 }
+            }
+
+            if let reading = try smc.read(BatteryGauge.stateOfCharge) {
+                gaugeCharge = reading.value.doubleValue.map { Int($0) }
+            }
+
+            if let spec = detected.firmwareLimit.spec,
+               let activation = try smc.read(spec.activation)?.bytes.first,
+               let upper = try smc.read(spec.upper)?.bytes,
+               let lower = try smc.read(spec.lower)?.bytes {
+                firmwareLimit = FirmwareLimitState(
+                    isActive: activation == FirmwareLimitSpec.activeByte,
+                    upper: FirmwareLimitSpec.percent(from: upper),
+                    lower: FirmwareLimitSpec.percent(from: lower)
+                )
             }
 
             for (key, label, unit) in Self.telemetryKeys {
@@ -49,6 +77,8 @@ struct StatusReport {
             capabilities: capabilities,
             capabilitiesError: capabilitiesError,
             gateReadings: gateReadings,
+            firmwareLimit: firmwareLimit,
+            gaugeCharge: gaugeCharge,
             telemetry: telemetry
         )
     }
@@ -106,6 +136,16 @@ extension StatusReport {
             lines.append(row("SMC", "unavailable — \(error)"))
         } else if let capabilities {
             lines.append(row("Charge gate", describe(capabilities.chargeGate)))
+            lines.append(row("Firmware limit", describeFirmwareLimit(capabilities)))
+            if capabilities.firmwareLimit.isSupported, let gaugeCharge {
+                // The limit is enforced against this figure, not against the one
+                // at the top of this report.
+                var line = "\(gaugeCharge) % (what the corridor is measured against)"
+                if gaugeCharge != battery.percentage {
+                    line += " — macOS shows \(battery.percentage) %"
+                }
+                lines.append(row("Gauge charge", line))
+            }
             lines.append(row("Hardware 80 % limit", capabilities.hasHardwareChargeLimit ? "yes (CHWA)" : "no"))
             lines.append(row(
                 "Adapter control keys",
@@ -198,6 +238,19 @@ extension StatusReport {
         case .unsupported:
             return "unsupported"
         }
+    }
+
+    /// The corridor and whether it is live, in one line.
+    ///
+    /// Says the keys as well as the state, because "no" to a question about
+    /// firmware support and "no" to a question about whether it is switched on
+    /// are different answers that would otherwise read the same.
+    private func describeFirmwareLimit(_ capabilities: Capabilities) -> String {
+        guard let spec = capabilities.firmwareLimit.spec else { return "unsupported" }
+        let keys = spec.keys.map(\.description).joined(separator: "+")
+        guard let state = firmwareLimit else { return "\(keys) — unreadable" }
+        guard state.isActive else { return "\(keys) — off" }
+        return "\(keys) — active, \(state.lower)–\(state.upper) %"
     }
 
     private func row(_ label: String, _ value: String) -> String {

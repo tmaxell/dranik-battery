@@ -122,14 +122,32 @@ public enum ChargeGate: Equatable, Sendable {
 /// What this machine can do, determined by probing rather than by model.
 public struct Capabilities: Equatable, Sendable {
     public let chargeGate: ChargeGate
-    /// Firmware-enforced 80 % limit. Absent on MacBookPro17,1: the limit has to
-    /// be held by a process, which is what drives the fail-safe requirements.
+    /// A charge corridor the firmware holds on its own.
+    ///
+    /// Preferred over the software gate wherever both exist, because it keeps the
+    /// limit through sleep, through a daemon restart and through a crash — most
+    /// of the class of failure the gate has to be defended against. A reboot
+    /// does clear it, measured 2026-10-22, so the daemon writes it again at
+    /// startup. On MacBookPro17,1 this arrived in the same firmware update that
+    /// took `CHTE` away.
+    public let firmwareLimit: FirmwareChargeLimit
+    /// Firmware-enforced 80 % limit under `CHWA`. Absent on MacBookPro17,1, and
+    /// not the same thing as `firmwareLimit`: this one is a fixed 80 % with no
+    /// corridor and nothing to set.
     public let hasHardwareChargeLimit: Bool
-    /// Present, but never actuated in this phase.
+    /// Present, but never actuated in this phase. `CHIE` is the key `batt` drives
+    /// for its adapter mode, which is the fallback if a future macOS gates the
+    /// firmware corridor the way macOS 27 does.
     public let adapterControlKeys: [SMCKey]
 
-    public init(chargeGate: ChargeGate, hasHardwareChargeLimit: Bool, adapterControlKeys: [SMCKey]) {
+    public init(
+        chargeGate: ChargeGate,
+        firmwareLimit: FirmwareChargeLimit = .unsupported,
+        hasHardwareChargeLimit: Bool,
+        adapterControlKeys: [SMCKey]
+    ) {
         self.chargeGate = chargeGate
+        self.firmwareLimit = firmwareLimit
         self.hasHardwareChargeLimit = hasHardwareChargeLimit
         self.adapterControlKeys = adapterControlKeys
     }
@@ -148,6 +166,29 @@ public struct Capabilities: Equatable, Sendable {
             chargeGate = .pair(.chargeGateCH0B, .chargeGateCH0C)
         }
 
+        // All three keys, each matching its full descriptor, or nothing. A
+        // corridor written through two of three keys is not a corridor.
+        var firmwareLimit = FirmwareChargeLimit.unsupported
+        let candidate = FirmwareLimitSpec.bf0
+        let triple = [
+            (candidate.activation, candidate.activationInfo),
+            (candidate.upper, candidate.upperInfo),
+            (candidate.lower, candidate.lowerInfo),
+        ]
+        var allPresent = true
+        for (key, expected) in triple {
+            // A gated key throws rather than reporting absence — that is how
+            // macOS 27 presents this family. Either way it is not usable, and
+            // `detect` must not fail over hardware it merely cannot drive.
+            guard let info = (try? connection.keyInfo(key)) ?? nil, info == expected else {
+                allPresent = false
+                break
+            }
+        }
+        if allPresent {
+            firmwareLimit = .supported(candidate)
+        }
+
         let hasHardwareChargeLimit = try connection.keyInfo(SMCKey("CHWA")!) != nil
 
         var adapterKeys: [SMCKey] = []
@@ -160,6 +201,7 @@ public struct Capabilities: Equatable, Sendable {
 
         return Capabilities(
             chargeGate: chargeGate,
+            firmwareLimit: firmwareLimit,
             hasHardwareChargeLimit: hasHardwareChargeLimit,
             adapterControlKeys: adapterKeys
         )

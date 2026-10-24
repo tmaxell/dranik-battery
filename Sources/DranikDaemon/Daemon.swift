@@ -14,6 +14,30 @@ public final class Daemon {
     /// notification that never arrives, not the primary mechanism — at a minute
     /// it would be a poor limiter on its own.
     public static let safetyNetInterval: TimeInterval = 60
+    /// How late the system may fire the safety net, so it can coalesce the
+    /// wakeup with whatever else is waking anyway.
+    ///
+    /// A timer with no leeway asks the kernel to wake at a precise instant, and
+    /// on a laptop the wakeup costs more than the work: a decision measures
+    /// 0.73 ms. Ten seconds on a sixty-second backstop is free — nothing is
+    /// waiting on it, and a backstop that fires at 60 s or 68 s is the same
+    /// backstop. The follow-up after a write deliberately has none: that one
+    /// exists to catch a reaction at a known moment.
+    public static let safetyNetLeeway: DispatchTimeInterval = .seconds(10)
+    /// How long after writing the corridor to look again at what the charger did.
+    ///
+    /// `ChargeGateTiming.observedEffectLatency` is 7 seconds, measured; this
+    /// leaves a margin on it. The point is that the hardware's reaction is
+    /// announced by nothing at all — the same silence that made the menu bar go
+    /// stale in phase 2 — so without a deliberate second look the report keeps
+    /// whatever it concluded in the instant before the firmware acted.
+    ///
+    /// Observed on 2026-10-22, immediately after the first real install: the
+    /// corridor was written, the charger went to `inhibited` and −583 mA within
+    /// seconds, and `dranik daemon` went on saying "plugged in and not charging,
+    /// for reasons that are not the limit". With the safety net at ten minutes
+    /// that is how long a working limit can look like an unexplained one.
+    public static let firmwareWriteFollowUp: TimeInterval = 12
     /// After waking, the machine reports transient nonsense for a while. Nothing
     /// is closed during this window; opening is still allowed.
     public static let postWakeSettle: TimeInterval = 30
@@ -26,7 +50,13 @@ public final class Daemon {
 
     private let smc: SMCConnection
     private let capabilities: Capabilities
+    /// What this process is entitled to do, decided once from what probing
+    /// found. See `DaemonMode`.
+    private let mode: DaemonMode
     private let actuator: GateActuator
+    /// Present only when the firmware offers a corridor. Nil on the gate path,
+    /// which is what keeps the two from ever both writing.
+    private let firmwareActuator: FirmwareLimitActuator?
     private let watchdog: Watchdog
     private let dryRun: Bool
     private let statePath: String
@@ -37,6 +67,8 @@ public final class Daemon {
     private var controllerState = ControllerState()
     private var monitor: PowerEventMonitor?
     private var safetyNet: DispatchSourceTimer?
+    /// One-shot, armed after a corridor write. See `scheduleFirmwareFollowUp`.
+    private var firmwareFollowUp: DispatchSourceTimer?
     private var signalSources: [DispatchSourceSignal] = []
     private var sleepDetector = SleepDetector()
     private var lastReason = "starting up"
@@ -57,6 +89,10 @@ public final class Daemon {
     ) {
         self.smc = smc
         self.capabilities = capabilities
+        self.mode = DaemonMode.forHardware(
+            firmwareLimitIsSupported: capabilities.firmwareLimit.isSupported,
+            gateIsSupported: capabilities.chargeGate.isSupported
+        )
         self.config = config
         self.dryRun = dryRun
         self.statePath = statePath
@@ -65,12 +101,21 @@ public final class Daemon {
         self.actuator = GateActuator(
             smc: smc, specs: capabilities.chargeGate.specs, queue: queue, dryRun: dryRun
         )
+        self.firmwareActuator = capabilities.firmwareLimit.spec.map {
+            FirmwareLimitActuator(smc: smc, spec: $0, dryRun: dryRun)
+        }
         self.watchdog = Watchdog(specs: capabilities.chargeGate.specs, dryRun: dryRun)
     }
 
     // MARK: - Lifecycle
 
     public func run() -> Never {
+        switch mode {
+        case .firmwareLimiting: runFirmwareLimiting()
+        case .observing: runObserving()
+        case .limiting: break
+        }
+
         let gateNames = capabilities.chargeGate.keys.map(\.description).joined(separator: "+")
         // Before anything else it might print. The first decision line appearing
         // above the banner was how someone came to read "(write)" as a write.
@@ -111,8 +156,7 @@ public final class Daemon {
             exit(EX_OSERR)
         }
 
-        startSafetyNet()
-        watchdog.start()
+        startPeriodicWork()
         startControlServer()
 
         log.notice("""
@@ -126,6 +170,337 @@ public final class Daemon {
         }
     }
 
+    /// Runs on a machine where nothing was recognised that could limit charging.
+    ///
+    /// Exiting would be simpler, and that is what this used to do — with
+    /// `EX_UNAVAILABLE`, which `KeepAlive { SuccessfulExit: false }` reads as a
+    /// reason to try again. Ten seconds later, for five hours.
+    ///
+    /// Staying up is also the more useful answer. The socket is what tells the
+    /// CLI and the app *why* nothing is being limited; without it they can only
+    /// report that the daemon is missing, which sends someone looking in the
+    /// wrong place entirely.
+    private func runObserving() -> Never {
+        // Banner first, and in the same words as the other two paths, so that
+        // `dranik soak` can count starts on every path rather than only where
+        // something is being limited. Without it an observing daemon restarting
+        // in a loop reported zero starts — which is the exact failure of
+        // 2026-10-12, seventeen hundred times over, invisible to the tool built
+        // for finding it.
+        log.notice("""
+        dranikd running\(self.dryRun ? " (DRY RUN — no SMC writes)" : "", privacy: .public), \
+        limit \(self.config.lowerLimit, privacy: .public)–\
+        \(self.config.upperLimit, privacy: .public)%, observing only
+        """)
+        log.fault("""
+        no charge-gate key on this machine matched its expected description. \
+        Nothing here can limit charging, and nothing will be written. \
+        Staying up to answer clients.
+        """)
+        if dryRun {
+            print("\nNo charge gate on this machine. Observing only — nothing will be written.\n")
+            fflush(stdout)
+        }
+
+        installSignalHandlers()
+        lastReason = "no charge-gate key on this machine"
+
+        // Events only keep the battery figure in the report current. No safety
+        // net and no watchdog: there is nothing to re-decide and nothing to
+        // guard, and a watchdog here would exit non-zero for want of decisions —
+        // the restart loop again, at two minutes instead of ten seconds.
+        do {
+            let monitor = PowerEventMonitor(queue: queue) { [weak self] event in
+                guard let self else { return }
+                // Answered, never refused: observing must not delay a sleep.
+                if case .canSleep(let acknowledgement) = event { acknowledgement.allow() }
+                if case .willSleep(let acknowledgement) = event { acknowledgement.allow() }
+                self.publishReport()
+            }
+            try monitor.start()
+            self.monitor = monitor
+        } catch {
+            // Not fatal here. Without a gate the subscriptions were only keeping
+            // a readout fresh, and answering a stale figure beats not answering.
+            log.error("""
+            could not subscribe to power events: \
+            \(String(describing: error), privacy: .public) — the report will not refresh
+            """)
+        }
+
+        // Asked rather than skipped, so that "observing starts no timers" is a
+        // fact about `DaemonMode` and not a thing this function happens not to do.
+        startPeriodicWork()
+        startControlServer()
+
+        withExtendedLifetime(signalSources) {
+            dispatchMain()
+        }
+    }
+
+    /// Runs on a machine whose firmware will hold the corridor itself.
+    ///
+    /// Shorter than the gate path by everything the gate needed: no hysteresis to
+    /// run, no watchdog, no sleep policy, no trust to lose. The corridor is state
+    /// the hardware keeps, so the work is to set it and then to notice if it
+    /// stops saying what was asked for.
+    ///
+    /// The sleep handlers are answered and otherwise ignored on purpose. The
+    /// whole reason `sleepPolicy` exists is that the gate's position is whatever
+    /// the daemon left behind; a firmware corridor is enforced while the machine
+    /// sleeps, so there is nothing to decide before sleeping.
+    private func runFirmwareLimiting() -> Never {
+        let keys = capabilities.firmwareLimit.keys.map(\.description).joined(separator: "+")
+        if dryRun {
+            print("""
+
+            ┌─────────────────────────────────────────────────────────────┐
+            │  DRY RUN — nothing is written to the SMC.                   │
+            │  The firmware corridor is read but never set. The battery   │
+            │  will charge past the limit; that is expected.              │
+            │  To make it act, install it:  make install                  │
+            └─────────────────────────────────────────────────────────────┘
+
+            limit \(config.lowerLimit)–\(config.upperLimit)%, firmware corridor \(keys)
+
+            """)
+            fflush(stdout)
+        }
+
+        installSignalHandlers()
+        queue.sync { evaluateFirmware(trigger: "startup") }
+
+        do {
+            let monitor = PowerEventMonitor(queue: queue) { [weak self] event in
+                guard let self else { return }
+                // Answered and then dropped. There is nothing to decide before
+                // sleeping — the firmware enforces the corridor through it — and
+                // three SMC reads while macOS waits on the acknowledgement is
+                // work that can only delay a sleep.
+                if case .canSleep(let acknowledgement) = event {
+                    acknowledgement.allow()
+                    return
+                }
+                if case .willSleep(let acknowledgement) = event {
+                    acknowledgement.allow()
+                    return
+                }
+                if case .didWake = event {
+                    // Not to re-decide — the firmware held the corridor all
+                    // night — but because a firmware update applies across a
+                    // restart and this is the cheapest place to find out.
+                    self.evaluateFirmware(trigger: "woke up")
+                    return
+                }
+                // Charge and power-source changes do not change the corridor.
+                // They change what the report should say about it, which is why
+                // this is a republish rather than a decision.
+                self.evaluateFirmware(trigger: "power event")
+            }
+            try monitor.start()
+            self.monitor = monitor
+        } catch {
+            // Not fatal, and notably less serious than on the gate path: the
+            // corridor goes on being enforced by the firmware with nobody
+            // watching. What is lost is a fresh readout.
+            log.error("""
+            could not subscribe to power events: \
+            \(String(describing: error), privacy: .public) — the report will not refresh
+            """)
+        }
+
+        startPeriodicWork()
+        startControlServer()
+
+        log.notice("""
+        dranikd running\(self.dryRun ? " (DRY RUN — no SMC writes)" : "", privacy: .public), \
+        limit \(self.config.lowerLimit, privacy: .public)–\
+        \(self.config.upperLimit, privacy: .public)%, \
+        held by the firmware via \(keys, privacy: .public)
+        """)
+
+        withExtendedLifetime(signalSources) {
+            dispatchMain()
+        }
+    }
+
+    /// Starts the timers this mode is entitled to run — and only those.
+    ///
+    /// One place rather than three. Each run path used to start its own, which
+    /// left `DaemonMode` asserting what may run while nothing consulted it, so
+    /// the two could drift apart silently. They must not: an observing daemon
+    /// running the watchdog would exit non-zero for want of decisions, and
+    /// launchd would turn that into the restart loop of 2026-10-12 at
+    /// two-minute intervals instead of ten-second ones.
+    private func startPeriodicWork() {
+        switch mode.safetyNet {
+        case .none: break
+        case .decisions: startSafetyNet()
+        case .corridor: startFirmwareSafetyNet()
+        }
+        if mode.runsWatchdog { watchdog.start() }
+    }
+
+    /// Re-reads the corridor and what the charger is doing about it.
+    ///
+    /// The same minute as the gate path, and the reason is the same: the moment
+    /// charging actually stops is announced by nothing. This was briefly ten
+    /// minutes, on the argument that a corridor measured holding for 2 days and
+    /// 20 hours needs no watching — which was true of the corridor and wrong
+    /// about the report, because this timer refreshes both. A limit that works
+    /// then looked unexplained for up to ten minutes. The cost of a minute is
+    /// what the gate path already pays, and the daemon's measured idle cost was
+    /// 1.6 seconds of CPU a day with it.
+    private func startFirmwareSafetyNet() {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(
+            deadline: .now() + Self.safetyNetInterval,
+            repeating: Self.safetyNetInterval,
+            leeway: Self.safetyNetLeeway
+        )
+        timer.setEventHandler { [weak self] in
+            self?.evaluateFirmware(trigger: "safety net")
+        }
+        timer.resume()
+        safetyNet = timer
+    }
+
+    /// Brings the firmware's corridor to what the configuration asks for, and
+    /// records what it found doing so.
+    private func evaluateFirmware(trigger: String) {
+        guard let firmwareActuator else { return }
+
+        let snapshot = try? PowerReader.snapshot()
+        let activity = Self.activity(from: snapshot)
+        // Only when it can change the answer. The gauge feeds one check — "the
+        // corridor is set and the battery charged past it anyway" — which can
+        // only be true while charging. Measured at 0.363 ms a read against
+        // 1.86 ms for the whole pass, and the pass runs every minute of every
+        // day, so reading it in the other four states is a fifth of the cost of
+        // this path spent on a figure nothing looks at.
+        let gauge = activity == .charging ? firmwareActuator.gaugeCharge() : nil
+        var decision = FirmwareLimitPolicy.decide(
+            config: config,
+            observed: firmwareActuator.read(),
+            activity: activity,
+            gaugeCharge: gauge
+        )
+
+        // Every decision line on this path carries the marker when nothing is
+        // being written, because `dranik soak` reads these lines back and must
+        // not count a rehearsal as something the machine did.
+        let rehearsal = dryRun ? " [DRY RUN]" : ""
+
+        if decision.requiresWrite {
+            log.notice("""
+            \(decision.reason.description, privacy: .public) \
+            (\(trigger, privacy: .public))\(rehearsal, privacy: .public)
+            """)
+            if firmwareActuator.apply(decision.plan, reason: trigger) {
+                // Decide again from what the firmware now reports, so the report
+                // describes the settled corridor rather than the repair. The
+                // firmware is the authority on its own state; a write that
+                // returned success is not.
+                decision = FirmwareLimitPolicy.decide(
+                    config: config,
+                    observed: firmwareActuator.read(),
+                    activity: activity,
+                    // No gauge on this pass, deliberately, which switches the
+                    // "is it being honoured" confirmation off for it. The
+                    // charger has had no time to react — seven seconds,
+                    // measured — and `activity` here was read *before* the
+                    // write, so a machine charging above the corridor would
+                    // report "the firmware is not enforcing it" in the same
+                    // breath as setting it. That is the normal state after a
+                    // reboot, which clears the corridor while the battery is
+                    // charging. The follow-up pass does the confirming.
+                    gaugeCharge: nil
+                )
+                // Accepted by the SMC and still not holding is the firmware
+                // declining the corridor, and it has to read that way. Left as
+                // `corridorDrifted` it reported "putting it back" as the settled
+                // state, which claims an action that is not going to happen
+                // until the next pass. A dry run is exempt: nothing was written,
+                // so of course nothing stuck.
+                if decision.requiresWrite && !dryRun {
+                    decision = FirmwareLimitDecision(
+                        plan: decision.plan, requiresWrite: false, reason: .writeFailed
+                    )
+                }
+                // The keys are right immediately; the charger is not. Come back
+                // once it has had time to act, because nothing will announce it.
+                scheduleFirmwareFollowUp()
+            } else {
+                decision = FirmwareLimitDecision(
+                    plan: decision.plan, requiresWrite: false, reason: .writeFailed
+                )
+            }
+        }
+
+        if decision.reason.code != lastReasonCode {
+            if decision.reason.isFault {
+                log.fault("""
+                \(decision.reason.description, privacy: .public)\(rehearsal, privacy: .public)
+                """)
+            } else {
+                log.notice("""
+                \(decision.reason.description, privacy: .public) \
+                (\(trigger, privacy: .public))\(rehearsal, privacy: .public)
+                """)
+            }
+        }
+        lastReason = decision.reason.description
+        lastReasonCode = decision.reason.code
+
+        // "Closed" here means what it means everywhere else in the report:
+        // charging is being held off. Derived from the same hardware reading as
+        // the reason, so the two lines cannot contradict each other.
+        if snapshot == nil {
+            controllerState.gate = nil
+        } else {
+            switch activity {
+            case .heldOff, .comingDown: controllerState.gate = .closed
+            case .charging, .onBattery, .indeterminate: controllerState.gate = .open
+            }
+        }
+
+        publishReport()
+    }
+
+    /// Looks again shortly after a corridor write, once the charger has had time
+    /// to act on it.
+    ///
+    /// One-shot and replaceable: a second write before it fires cancels the
+    /// first, because only the latest write is worth following up.
+    private func scheduleFirmwareFollowUp() {
+        firmwareFollowUp?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + Self.firmwareWriteFollowUp)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.firmwareFollowUp = nil
+            self.evaluateFirmware(trigger: "after the corridor was set")
+        }
+        timer.resume()
+        firmwareFollowUp = timer
+    }
+
+    /// Turns a battery reading into what the charger is doing.
+    ///
+    /// Kept here rather than in `DranikCore` only because `BatterySnapshot` is a
+    /// `DranikPower` type; the decision itself is `FirmwareChargeActivity.from`,
+    /// which is pure and tested.
+    private static func activity(from snapshot: BatterySnapshot?) -> FirmwareChargeActivity {
+        guard let snapshot else { return .indeterminate }
+        return FirmwareChargeActivity.from(
+            isExternalConnected: snapshot.isExternalConnected,
+            isCharging: snapshot.isCharging,
+            milliamps: snapshot.amperage,
+            isInhibited: snapshot.notChargingReason?.contains(.inhibited) == true
+                || (snapshot.chargerInhibitReason ?? 0) != 0
+        )
+    }
+
     private func startControlServer() {
         let server = ControlServer(
             path: socketPath,
@@ -133,9 +508,22 @@ public final class Daemon {
             applyConfig: { [weak self] newConfig in
                 guard let self else { return }
                 self.queue.async {
+                    // Kept whatever the mode: the configuration is what the
+                    // person asked for, and it should survive a machine that
+                    // cannot honour it today.
                     self.config = newConfig
                     try? ConfigStore.save(newConfig, to: self.configPath)
-                    self.evaluate(trigger: "limit changed")
+                    switch self.mode {
+                    case .limiting:
+                        self.evaluate(trigger: "limit changed")
+                    case .firmwareLimiting:
+                        self.evaluateFirmware(trigger: "limit changed")
+                    case .observing:
+                        // Nothing to decide. Republish so the new limits show
+                        // and the waiting client is answered, but the gate goes
+                        // on saying what is true: there isn't one.
+                        self.publishReport()
+                    }
                 }
             },
             reloadConfig: { [weak self] in
@@ -146,12 +534,26 @@ public final class Daemon {
                         self.log.notice("config: \(problem, privacy: .public)")
                     }
                     self.config = loaded.config
-                    self.evaluate(trigger: "config reloaded")
+                    switch self.mode {
+                    case .limiting:
+                        self.evaluate(trigger: "config reloaded")
+                    case .firmwareLimiting:
+                        self.evaluateFirmware(trigger: "config reloaded")
+                    case .observing:
+                        self.publishReport()
+                    }
                 }
             },
             restoreTrust: { [weak self] in
                 guard let self else { return }
                 self.queue.async {
+                    // On the firmware path there is no trust to restore, but the
+                    // intent behind the command — "make the limit work again" —
+                    // still maps onto something: put the corridor back.
+                    if self.mode == .firmwareLimiting {
+                        self.evaluateFirmware(trigger: "asked to re-apply")
+                        return
+                    }
                     guard self.actuator.restoreTrust() else { return }
                     self.evaluate(trigger: "gate re-armed")
                 }
@@ -170,6 +572,14 @@ public final class Daemon {
         }
     }
 
+    private var heldBy: String {
+        switch mode {
+        case .firmwareLimiting: return DaemonReport.HeldBy.firmware
+        case .limiting: return DaemonReport.HeldBy.daemon
+        case .observing: return DaemonReport.HeldBy.nothing
+        }
+    }
+
     private func publishReport() {
         let chargerReason = (try? PowerReader.snapshot())?.notChargingReason
         control?.publish(
@@ -183,8 +593,9 @@ public final class Daemon {
                 gateIsTrusted: actuator.isTrusted,
                 chargerReason: chargerReason.map(String.init(describing:)),
                 reasonCode: lastReasonCode,
-                limitingIsSupported: capabilities.chargeGate.isSupported,
+                limitingIsSupported: mode.mayWriteToSMC,
                 preventIdleSleepWhileCharging: config.preventIdleSleepWhileCharging,
+                heldBy: heldBy,
                 decidedAt: Date()
             ),
             config: config
@@ -196,7 +607,30 @@ public final class Daemon {
         control?.stop()
         watchdog.stop()
         safetyNet?.cancel()
+        firmwareFollowUp?.cancel()
         monitor?.stop()
+
+        guard mode.restoresOnExit else {
+            if mode == .firmwareLimiting {
+                // Deliberately left alone. The corridor is the limit working,
+                // and the firmware goes on enforcing it with nothing running —
+                // which is the point. Clearing it here would mean charge
+                // limiting lapsed on every restart, and `make install` restarts
+                // the daemon. Uninstalling clears it.
+                log.notice("""
+                shutting down (\(reason, privacy: .public)) — \
+                the firmware keeps the corridor
+                """)
+            } else {
+                // Nothing was ever written, so there is nothing to put back.
+                // Saying "opening the gate" here would be a lie in the log.
+                log.notice("""
+                shutting down (\(reason, privacy: .public)) — nothing was being limited
+                """)
+            }
+            smc.close()
+            exit(code)
+        }
 
         log.notice("shutting down (\(reason, privacy: .public)) — opening the gate")
         if dryRun {
@@ -338,7 +772,9 @@ public final class Daemon {
     private func startSafetyNet() {
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(
-            deadline: .now() + Self.safetyNetInterval, repeating: Self.safetyNetInterval
+            deadline: .now() + Self.safetyNetInterval,
+            repeating: Self.safetyNetInterval,
+            leeway: Self.safetyNetLeeway
         )
         timer.setEventHandler { [weak self] in
             guard let self else { return }

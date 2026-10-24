@@ -1,3 +1,5 @@
+import DranikCore
+import DranikDaemon
 import DranikSMC
 import Foundation
 
@@ -48,15 +50,31 @@ func runLiveSMCTests() {
         }
     }
 
-    test("a charge gate is detected") {
+    test("a gate is detected, or this machine genuinely has none") {
+        // This asserted that a gate was always found, which held until a
+        // firmware update took CHTE off the target machine on 2026-10-12 and
+        // turned a hardware fact into a red suite. The assertion worth keeping
+        // is narrower: whatever gate-shaped key is physically here must be
+        // recognised. A machine with none is a fact; a machine with one we
+        // failed to match is a defect.
         let smc = try connect()
         defer { smc.close() }
 
         let capabilities = try Capabilities.detect(using: smc)
-        expectTrue(
-            capabilities.chargeGate.isSupported,
-            "no charge-control key matched its expected metadata on this machine"
-        )
+        if capabilities.chargeGate.isSupported { return }
+
+        let candidates = ["CHTE", "CH0B", "CH0C"]
+        let present = candidates.filter { name in
+            guard let key = SMCKey(name) else { return false }
+            return ((try? smc.keyInfo(key)) ?? nil) != nil
+        }
+        guard present.isEmpty else {
+            return expectTrue(false, """
+            \(present.joined(separator: ", ")) present on this machine but no spec matched — \
+            that is detection drifting, not hardware changing
+            """)
+        }
+        try skip("no gate-shaped key exists here (\(candidates.joined(separator: ", ")) all absent)")
     }
 
     test("gate keys are readable and carry the writable attribute") {
@@ -101,5 +119,61 @@ func runLiveSMCTests() {
         let reading = try expectNotNil(try smc.read(SMCKey("BUIC")!))
         let percentage = try expectNotNil(reading.value.doubleValue)
         expectInRange(percentage, 0...100)
+    }
+}
+
+/// The daemon spent five hours restarting every ten seconds because a firmware
+/// update removed its charge-gate key and the only answer it had was to die.
+func runDaemonModeTests() {
+    test("a recognised gate and no firmware corridor means limiting") {
+        expectEqual(
+            DaemonMode.forHardware(firmwareLimitIsSupported: false, gateIsSupported: true),
+            .limiting
+        )
+    }
+
+    test("recognising nothing means observing, not exiting") {
+        expectEqual(
+            DaemonMode.forHardware(firmwareLimitIsSupported: false, gateIsSupported: false),
+            .observing
+        )
+    }
+
+    test("observing never writes to the SMC") {
+        // Principles III and VI. A mode that recognised nothing has nothing it
+        // is entitled to write.
+        expectFalse(DaemonMode.observing.mayWriteToSMC)
+        expectTrue(DaemonMode.limiting.mayWriteToSMC)
+    }
+
+    test("observing runs no watchdog, because the watchdog would restore the loop") {
+        // Not a preference. With no decisions being made, the watchdog's stall
+        // detector fires after 120 awake seconds and exits non-zero, which is
+        // precisely the restart loop this change removes.
+        expectFalse(DaemonMode.observing.runsWatchdog)
+        expectTrue(DaemonMode.limiting.runsWatchdog)
+    }
+
+    test("the backstop lets the kernel coalesce its wakeup, the follow-up does not") {
+        // On a laptop the wakeup costs more than the work done once awake — a
+        // decision measures 0.73 ms. A backstop nobody is waiting on can drift;
+        // the look taken after a write cannot, because it exists to catch the
+        // charger reacting at a known moment.
+        expectEqual(Daemon.safetyNetLeeway, .seconds(10))
+        expectTrue(Daemon.safetyNetLeeway != .seconds(0))
+        expectTrue(
+            Daemon.firmwareWriteFollowUp > ChargeGateTiming.observedEffectLatency,
+            "the follow-up has to land after the hardware has had time to act"
+        )
+    }
+
+    test("each mode names the backstop it runs, so the daemon can act on it") {
+        // Not a yes-or-no: the two limiting modes both want a timer and want
+        // different things from it. As a `Bool` this could not be acted on, and
+        // each run path started its own — which is how the property and the
+        // daemon could drift apart without anything noticing.
+        expectEqual(DaemonMode.observing.safetyNet, .none)
+        expectEqual(DaemonMode.limiting.safetyNet, .decisions)
+        expectEqual(DaemonMode.firmwareLimiting.safetyNet, .corridor)
     }
 }

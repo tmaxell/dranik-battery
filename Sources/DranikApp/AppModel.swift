@@ -240,7 +240,7 @@ final class AppModel: ObservableObject {
         pollTimer?.cancel()
         let interval = cadence.interval
         let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now() + interval, repeating: interval)
+        timer.schedule(deadline: .now() + interval, repeating: interval, leeway: cadence.leeway)
         timer.setEventHandler { [weak self] in
             guard let self else { return }
             if cadence.tick() {
