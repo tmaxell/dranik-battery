@@ -37,6 +37,22 @@ public struct PollCadence: Equatable, Sendable {
     /// forever. Two minutes of an open popover is already unusual.
     public static let maximumFastTicks = 24
 
+    /// How late the system may fire each poll, so it can coalesce the wakeup with
+    /// whatever else is waking anyway.
+    ///
+    /// A timer with no leeway asks the kernel to wake at a precise instant, and
+    /// on a laptop a precise wakeup is the expensive part — more so than the
+    /// work done once awake, which measures 0.265 ms. So the slow cadence gets
+    /// generous leeway: nothing reads the figure while the popover is shut, and
+    /// a backstop that fires at 30 s or 35 s is the same backstop.
+    ///
+    /// The fast cadence gets a tenth of a second. Someone is looking at the
+    /// window, and a reading that arrives a second late is a reading that looks
+    /// stuck.
+    public var leeway: DispatchTimeInterval {
+        isPopoverOpen ? .milliseconds(100) : .seconds(5)
+    }
+
     public private(set) var isPopoverOpen = false
     private var fastTicks = 0
 
