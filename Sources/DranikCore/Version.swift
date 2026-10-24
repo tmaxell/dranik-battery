@@ -5,5 +5,5 @@
 /// previous build. Knowing that is the difference between "this field is missing"
 /// and "this daemon is old".
 public enum DranikVersion {
-    public static let current = "0.1.0"
+    public static let current = "0.2.0"
 }
