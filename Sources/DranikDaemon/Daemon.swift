@@ -14,6 +14,16 @@ public final class Daemon {
     /// notification that never arrives, not the primary mechanism — at a minute
     /// it would be a poor limiter on its own.
     public static let safetyNetInterval: TimeInterval = 60
+    /// How late the system may fire the safety net, so it can coalesce the
+    /// wakeup with whatever else is waking anyway.
+    ///
+    /// A timer with no leeway asks the kernel to wake at a precise instant, and
+    /// on a laptop the wakeup costs more than the work: a decision measures
+    /// 0.73 ms. Ten seconds on a sixty-second backstop is free — nothing is
+    /// waiting on it, and a backstop that fires at 60 s or 68 s is the same
+    /// backstop. The follow-up after a write deliberately has none: that one
+    /// exists to catch a reaction at a known moment.
+    public static let safetyNetLeeway: DispatchTimeInterval = .seconds(10)
     /// How long after writing the corridor to look again at what the charger did.
     ///
     /// `ChargeGateTiming.observedEffectLatency` is 7 seconds, measured; this
@@ -344,7 +354,9 @@ public final class Daemon {
     private func startFirmwareSafetyNet() {
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(
-            deadline: .now() + Self.safetyNetInterval, repeating: Self.safetyNetInterval
+            deadline: .now() + Self.safetyNetInterval,
+            repeating: Self.safetyNetInterval,
+            leeway: Self.safetyNetLeeway
         )
         timer.setEventHandler { [weak self] in
             self?.evaluateFirmware(trigger: "safety net")
@@ -760,7 +772,9 @@ public final class Daemon {
     private func startSafetyNet() {
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(
-            deadline: .now() + Self.safetyNetInterval, repeating: Self.safetyNetInterval
+            deadline: .now() + Self.safetyNetInterval,
+            repeating: Self.safetyNetInterval,
+            leeway: Self.safetyNetLeeway
         )
         timer.setEventHandler { [weak self] in
             guard let self else { return }

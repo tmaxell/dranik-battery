@@ -1,4 +1,5 @@
 import DranikCore
+import DranikDaemon
 import DranikSMC
 import Foundation
 
@@ -151,6 +152,19 @@ func runDaemonModeTests() {
         // precisely the restart loop this change removes.
         expectFalse(DaemonMode.observing.runsWatchdog)
         expectTrue(DaemonMode.limiting.runsWatchdog)
+    }
+
+    test("the backstop lets the kernel coalesce its wakeup, the follow-up does not") {
+        // On a laptop the wakeup costs more than the work done once awake — a
+        // decision measures 0.73 ms. A backstop nobody is waiting on can drift;
+        // the look taken after a write cannot, because it exists to catch the
+        // charger reacting at a known moment.
+        expectEqual(Daemon.safetyNetLeeway, .seconds(10))
+        expectTrue(Daemon.safetyNetLeeway != .seconds(0))
+        expectTrue(
+            Daemon.firmwareWriteFollowUp > ChargeGateTiming.observedEffectLatency,
+            "the follow-up has to land after the hardware has had time to act"
+        )
     }
 
     test("each mode names the backstop it runs, so the daemon can act on it") {

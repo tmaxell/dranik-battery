@@ -305,13 +305,13 @@ Idle cost, re-measured on the firmware corridor: about 2 seconds of CPU per day
 for the daemon and 8 for the app. The daemon's figure was 1.6 on the software
 gate and went to 3.8 when the corridor arrived, because each decision read three
 more SMC keys; supplying the descriptors it already had, and reading the battery
-gauge only while charging, brought a decision from 1.77 ms back to 0.73.
+gauge only while charging, brought a decision from 1.77 ms back to 0.73. The backstop timers also carry leeway now, so the kernel can coalesce their wakeups instead of being held to a precise instant — on a laptop the wakeup costs more than the work.
 
 ## Development
 
 ```bash
 make build
-make test              # 295 tests, 923 assertions
+make test              # 296 tests, 926 assertions
 make ui-drill          # the app against a daemon that misbehaves on purpose
 make ui-snapshots      # render every popover state to PNG, light and dark
 make daemon-dry-run    # the whole decision cycle, writing nothing
