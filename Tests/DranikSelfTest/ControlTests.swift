@@ -53,6 +53,39 @@ func runControlTests() {
         }
     }
 
+    test("a native command timeout does not reuse the previous released state") {
+        var prior = report(upper: 100, lower: 75)
+        prior.heldBy = DaemonReport.HeldBy.native
+        prior.reasonCode = "nativeDisabled"
+        prior.nativeState = "disabled"
+        prior.nativeAgentLimit = 100
+        prior.nativeRegisteredLimit = nil
+        try withServer(publish: prior, config: ChargeConfig(upperLimit: 100)) { path, _ in
+            let response = try ControlClient.send(ControlRequest(command: .setLimit, upper: 80), to: path)
+            expectTrue(response.ok)
+            expectEqual(response.report?.upperLimit, 80)
+            expectEqual(response.report?.nativeState, "pending")
+            expectEqual(response.report?.reasonCode, "nativePending")
+            expectEqual(response.report?.gate, "unknown")
+            expectNil(response.report?.nativeAgentLimit)
+            expectNil(response.report?.nativeRegisteredLimit)
+        }
+    }
+    test("a native disable timeout does not reuse the previous registered state") {
+        var prior = report()
+        prior.heldBy = DaemonReport.HeldBy.native
+        prior.reasonCode = "nativeHolding"
+        prior.nativeState = "registered"
+        prior.nativeRegisteredLimit = 80
+        try withServer(publish: prior) { path, _ in
+            let response = try ControlClient.send(ControlRequest(command: .disable), to: path)
+            expectEqual(response.report?.upperLimit, 100)
+            expectEqual(response.report?.nativeState, "pending")
+            expectEqual(response.report?.reasonCode, "nativePending")
+            expectNil(response.report?.nativeRegisteredLimit)
+        }
+    }
+
     test("setLimit reaches the daemon and reports what will be in force") {
         let lock = NSLock()
         var applied: ChargeConfig?
@@ -368,7 +401,40 @@ func runControlTests() {
         expectEqual(report.upperLimit, 80)
         expectTrue(report.limitingIsSupported, "an old daemon predates the question")
         expectFalse(report.preventIdleSleepWhileCharging)
+        expectNil(report.nativeState)
+        expectNil(report.nativeAgentLimit)
+        expectNil(report.nativeRegisteredLimit)
         expectEqual(report.version, "unknown", "a version it never sent must not read as ours")
+    }
+
+    test("native lifecycle and targets survive JSON without changing the saved lower limit") {
+        var native = report()
+        native.heldBy = DaemonReport.HeldBy.native
+        native.reasonCode = "nativeApplied"
+        native.nativeState = "registered"
+        native.nativeAgentLimit = 80
+        native.nativeRegisteredLimit = 80
+        let response = ControlResponse(ok: true, report: native)
+        let decoded = try ControlProtocol.decodeResponse(ControlProtocol.encode(response))
+        expectEqual(decoded, response)
+        expectEqual(decoded.report?.heldBy, "macOS")
+        expectEqual(decoded.report?.lowerLimit, 75, "legacy configuration remains round-trippable")
+    }
+
+    test("native optional details can be explicitly null") {
+        var native = report()
+        native.heldBy = DaemonReport.HeldBy.native
+        let encoded = try ControlProtocol.encode(ControlResponse(ok: true, report: native))
+        var object = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
+        var reportObject = object["report"] as! [String: Any]
+        for key in ["nativeState", "nativeAgentLimit", "nativeRegisteredLimit"] {
+            reportObject[key] = NSNull()
+        }
+        object["report"] = reportObject
+        let decoded = try ControlProtocol.decodeResponse(JSONSerialization.data(withJSONObject: object))
+        expectNil(decoded.report?.nativeState)
+        expectNil(decoded.report?.nativeAgentLimit)
+        expectNil(decoded.report?.nativeRegisteredLimit)
     }
 
     test("requests and responses survive a round trip through JSON") {

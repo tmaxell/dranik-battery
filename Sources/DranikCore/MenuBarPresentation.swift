@@ -87,6 +87,8 @@ public struct MenuBarSummary: Equatable, Sendable {
     /// charger will not charge overnight" is the most surprising thing about this
     /// product on the gate path, and simply untrue on the firmware path.
     public let limitHeldByFirmware: Bool
+    /// Native macOS policy has an upper target, not our resume band or sleep policy.
+    public let limitHeldByNative: Bool
 
     public init(
         headline: String,
@@ -98,7 +100,8 @@ public struct MenuBarSummary: Equatable, Sendable {
         needsRearming: Bool = false,
         upperLimit: Int,
         lowerLimit: Int,
-        limitHeldByFirmware: Bool = false
+        limitHeldByFirmware: Bool = false,
+        limitHeldByNative: Bool = false
     ) {
         self.headline = headline
         self.detail = detail
@@ -110,6 +113,7 @@ public struct MenuBarSummary: Equatable, Sendable {
         self.upperLimit = upperLimit
         self.lowerLimit = lowerLimit
         self.limitHeldByFirmware = limitHeldByFirmware
+        self.limitHeldByNative = limitHeldByNative
     }
 }
 
@@ -128,11 +132,15 @@ public enum MenuBarPresentation {
         case .connected(let report):
             return connected(report, battery)
         case .notRunning:
-            return offline("Daemon not running", "Charging is not being limited.")
+            return offline("Daemon not running", offlinePolicyCaveat)
         case .unreachable(let why):
-            return offline("Daemon not responding", why)
+            return offline("Daemon not responding", why + " " + offlinePolicyCaveat)
         }
     }
+
+    /// A missing daemon does not release policy held outside its process.
+    private static let offlinePolicyCaveat = "The current charging policy is unknown. "
+        + "macOS or the firmware may retain a previously requested limit."
 
     /// Nothing to ask and nothing to command: the limits shown are a resting
     /// place for a disabled slider, not a claim about how the machine is set up.
@@ -152,6 +160,9 @@ public enum MenuBarPresentation {
     private static func connected(
         _ report: DaemonReport, _ battery: BatteryFacts?
     ) -> MenuBarSummary {
+        if report.heldBy == DaemonReport.HeldBy.native {
+            return nativeSummary(report, battery)
+        }
         let isLimiting = report.upperLimit < 100
         let byFirmware = report.heldBy == DaemonReport.HeldBy.firmware
 
@@ -298,6 +309,79 @@ public enum MenuBarPresentation {
         // Plugged in, allowed to charge, and not charging: the charger's own
         // business — a full battery, or macOS holding it back for its own reasons.
         return summary("Plugged in — not charging", icon: .holding)
+    }
+
+    /// Native registration is a policy acknowledgement, not a charge-gate reading.
+    /// Only the daemon's observational reason codes justify charging/holding words.
+    private static func nativeSummary(
+        _ report: DaemonReport, _ battery: BatteryFacts?
+    ) -> MenuBarSummary {
+        func summary(
+            _ headline: String, _ detail: String,
+            icon: MenuBarSummary.Icon = .warning,
+            tone: MenuBarSummary.Tone = .caution
+        ) -> MenuBarSummary {
+            MenuBarSummary(
+                headline: headline, detail: detail, icon: icon, tone: tone,
+                controlsAreEnabled: report.limitingIsSupported,
+                isLimiting: report.upperLimit < 100,
+                upperLimit: report.upperLimit, lowerLimit: report.lowerLimit,
+                limitHeldByNative: true
+            )
+        }
+
+        switch report.reasonCode {
+        case "nativePending":
+            return summary(
+                "macOS request accepted — pending",
+                report.reason + " Registration and physical effect are not confirmed."
+            )
+        case "nativeError":
+            return summary(
+                "macOS limit could not be verified", report.reason,
+                tone: .alarm
+            )
+        case "nativeDisabled":
+            return summary(
+                "Not limiting — macOS policy released", report.reason,
+                icon: .unlimited, tone: .normal
+            )
+        case "nativeOverride":
+            return summary(
+                "macOS calibration — charging to full",
+                "Apple may temporarily override the target for calibration. " + report.reason,
+                icon: .chargingToLimit
+            )
+        case "nativeComingDown":
+            return summary(
+                "Coming down to \(report.upperLimit) %",
+                "Plugged in but running on battery toward the target; this can drain the battery. "
+                    + report.reason,
+                icon: .onBattery
+            )
+        case "nativeHolding":
+            return summary(
+                "Not charging — macOS upper boundary", report.reason,
+                icon: .holding, tone: .normal
+            )
+        case "nativeCharging":
+            return summary(
+                "Charging toward \(report.upperLimit) %", report.reason,
+                icon: .chargingToLimit, tone: .normal
+            )
+        case "nativeOnBattery":
+            return summary(
+                battery.map(onBatteryHeadline) ?? "On battery", report.reason,
+                icon: .onBattery, tone: .normal
+            )
+        case "nativeApplied":
+            return summary(
+                "macOS target registered: \(report.upperLimit) %",
+                report.reason + " Physical charging effect is not yet confirmed."
+            )
+        default:
+            return summary("macOS charging policy", report.reason)
+        }
     }
 
     /// Explains the gap between the number on screen and the limit beside it.
