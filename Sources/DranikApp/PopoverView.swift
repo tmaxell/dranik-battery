@@ -61,7 +61,8 @@ struct PopoverView: View {
             ChargeBar(
                 percentage: model.percentage,
                 limit: model.summary.isLimiting ? model.summary.upperLimit : nil,
-                resumesAt: model.summary.isLimiting ? model.summary.lowerLimit : nil
+                resumesAt: model.summary.isLimiting && !model.summary.limitHeldByNative
+                    ? model.summary.lowerLimit : nil
             )
             .padding(.top, 4)
         }
@@ -108,7 +109,9 @@ struct PopoverView: View {
 
                 HStack {
                     Spacer()
-                    Text("resumes at \(model.resumePoint) %")
+                    Text(model.summary.limitHeldByNative
+                        ? "macOS manages the upper target"
+                        : "resumes at \(model.resumePoint) %")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                         .monospacedDigit()
@@ -122,6 +125,11 @@ struct PopoverView: View {
     }
 
     private var limitHelp: String {
+        if model.summary.limitHeldByNative {
+            return "Requests an upper target from macOS, not a resume band. macOS manages "
+                + "charging, including calibration overrides. Dranik's sleep policy and "
+                + "thermal cutoff do not apply on this path."
+        }
         if model.summary.limitHeldByFirmware {
             return "Charging stops at the limit. The firmware holds it, so it "
                 + "holds while the Mac is asleep too."

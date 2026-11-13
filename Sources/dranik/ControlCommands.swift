@@ -65,31 +65,46 @@ enum ControlCommands {
 
     private static func render(_ report: DaemonReport) -> String {
         let byFirmware = report.heldBy == DaemonReport.HeldBy.firmware
+        let byNative = report.heldBy == DaemonReport.HeldBy.native
         var lines = [
-            row("Limit", "\(report.lowerLimit)–\(report.upperLimit) %"),
+            row("Limit", byNative ? "upper target \(report.upperLimit) %"
+                : "\(report.lowerLimit)–\(report.upperLimit) %"),
             row("Held by", describeHolder(report.heldBy)),
             // Two different things wear the same row. On the gate path the
             // position of our own key is the interesting fact; on the firmware
             // path we have no key, and what matters is whether the charger is
             // currently being held off.
-            byFirmware
+            byNative
+                ? row("Policy reason", report.reasonCode)
+                : byFirmware
                 ? row("Charging", describeCharging(report.gate))
                 : row("Gate", report.gate),
             row("Reason", report.reason),
             row("Charger says", report.chargerReason ?? "-"),
         ]
-        if !byFirmware {
+        if byNative {
+            lines.append(row("Native state", report.nativeState ?? "unknown"))
+            lines.append(row("Agent target", report.nativeAgentLimit.map { "\($0) %" } ?? "unknown"))
+            lines.append(row("Registered", report.nativeRegisteredLimit.map { "\($0) %" } ?? "unknown"))
+            lines.append("")
+            lines.append("  macOS manages an upper target, not Dranik's saved resume band.")
+            lines.append("  An accepted request or registered target is not proof of physical effect.")
+            lines.append("  Dranik's sleep policy and thermal cutoff do not apply on this path.")
+            lines.append("  Apple may charge to full for calibration. Above target, a plugged-in Mac")
+            lines.append("  may run on battery while coming down to the target.")
+        }
+        if !byFirmware && !byNative {
             // Both of these are the gate path's machinery. Printing them under
             // firmware control would promise behaviour that is not there.
             lines.append(row("Sleep policy", report.sleepPolicy))
             lines.append(row("Thermal cutoff", String(format: "%.0f °C", report.thermalCutoff)))
         }
-        if report.preventIdleSleepWhileCharging && !byFirmware {
+        if report.preventIdleSleepWhileCharging && !byFirmware && !byNative {
             lines.append(row("Idle sleep", "held off while charging"))
         }
         // Before the explanations, not after them: they are all about how the
         // limit behaves, and the first thing to know is that there isn't one.
-        if report.upperLimit >= 100 {
+        if report.upperLimit >= 100 && !byNative {
             lines.append(row("", "limiting is off — charging is unmanaged"))
         }
         // And skipped entirely when limiting is off, because "a lidded laptop on
@@ -125,7 +140,7 @@ enum ControlCommands {
             lines.append("  Something else may also be managing charging — check")
             lines.append("  System Settings > Battery > Battery Health > Optimized Charging.")
         }
-        if !report.gateIsTrusted {
+        if !report.gateIsTrusted && !byNative {
             // The one state worth shouting about: the daemon is running, looks
             // healthy, and is not enforcing anything.
             lines.append("")
@@ -147,6 +162,8 @@ enum ControlCommands {
 
     private static func describeHolder(_ heldBy: String) -> String {
         switch heldBy {
+        case DaemonReport.HeldBy.native:
+            return "macOS — native upper-target policy"
         case DaemonReport.HeldBy.firmware:
             // Not "survives restarts" unqualified: a reboot clears it, measured
             // 2026-10-22. Saying so here is the difference between a person

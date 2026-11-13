@@ -32,6 +32,7 @@ struct Scenario {
     let expectedHeadline: String
     let expectedIcon: String
     let expectedControls: String
+    let expectedLimit: String?
 
     init(
         _ name: String,
@@ -40,7 +41,8 @@ struct Scenario {
         permissions: mode_t? = nil,
         headline: String,
         icon: String,
-        controls: String = "enabled"
+        controls: String = "enabled",
+        limit: String? = nil
     ) {
         self.name = name
         self.report = report
@@ -49,6 +51,7 @@ struct Scenario {
         self.expectedHeadline = headline
         self.expectedIcon = icon
         self.expectedControls = controls
+        self.expectedLimit = limit
     }
 }
 
@@ -66,7 +69,34 @@ func report(
     )
 }
 
+func nativeReport(_ code: String, state: String, target: Int = 80) -> DaemonReport {
+    var value = report(reasonCode: code, heldBy: DaemonReport.HeldBy.native)
+    value.upperLimit = target
+    value.nativeState = state
+    value.nativeAgentLimit = state == "pending" ? nil : target
+    value.nativeRegisteredLimit = state == "registered" ? target : nil
+    return value
+}
+
 let scenarios = [
+    Scenario("a native request that is not registered yet",
+             report: nativeReport("nativePending", state: "pending"),
+             headline: "macOS request accepted", icon: "warning", limit: "upper target 80 %"),
+    Scenario("a native policy that cannot be verified",
+             report: nativeReport("nativeError", state: "error"),
+             headline: "macOS limit could not be verified", icon: "warning"),
+    Scenario("a registered native target without physical confirmation",
+             report: nativeReport("nativeApplied", state: "registered"),
+             headline: "macOS target registered: 80 %", icon: "warning", limit: "upper target 80 %"),
+    Scenario("an Apple calibration override",
+             report: nativeReport("nativeOverride", state: "override"),
+             headline: "macOS calibration", icon: "chargingToLimit"),
+    Scenario("a native target draining toward the limit",
+             report: nativeReport("nativeComingDown", state: "registered"),
+             headline: "Coming down to 80 %", icon: "onBattery", limit: "upper target 80 %"),
+    Scenario("a native limit released by macOS",
+             report: nativeReport("nativeDisabled", state: "disabled", target: 100),
+             headline: "Not limiting — macOS policy released", icon: "unlimited", limit: "off"),
     Scenario(
         "no daemon at all",
         serve: false,
@@ -213,6 +243,9 @@ for scenario in scenarios {
     }
     if controls != scenario.expectedControls {
         problems.append("controls: expected \(scenario.expectedControls), got \(controls)")
+    }
+    if let wanted = scenario.expectedLimit, field("Limit", from: output) != wanted {
+        problems.append("limit: expected \(wanted), got \(field("Limit", from: output) ?? "<missing>")")
     }
 
     if problems.isEmpty {

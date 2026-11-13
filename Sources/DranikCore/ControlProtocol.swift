@@ -62,13 +62,20 @@ public struct DaemonReport: Codable, Equatable, Sendable {
     /// A client showing an icon or a warning branches on this; matching on the
     /// prose would break the first time a sentence is improved.
     public var reasonCode: String
-    /// Who is holding the limit: `"firmware"`, `"daemon"` or `"nothing"`.
+    /// Who is holding the limit: `"macOS"`, `"firmware"`, `"daemon"` or `"nothing"`.
     ///
     /// The difference is not cosmetic. A corridor held by the firmware survives
     /// sleep, a restart and a crash, which is why `sleepPolicy` stops applying
     /// and why uninstalling has to clear it. A client that shows a sleep caveat
     /// or a trust warning needs to know which world it is in.
     public var heldBy: String
+    /// Native policy lifecycle, distinct from evidence of physical charging.
+    /// Values: pending, registered, disabled, error, override.
+    public var nativeState: String?
+    /// The target accepted by the native agent, if readable.
+    public var nativeAgentLimit: Int?
+    /// The target registered with macOS, if readable; not proof of enforcement.
+    public var nativeRegisteredLimit: Int?
     /// The daemon's own version. See `DranikVersion` for why a client cares.
     public var version: String
     public var decidedAt: Date
@@ -76,6 +83,7 @@ public struct DaemonReport: Codable, Equatable, Sendable {
     /// The values `heldBy` can take. A client matches on these, so they are
     /// spelled once.
     public enum HeldBy {
+        public static let native = "macOS"
         public static let firmware = "firmware"
         public static let daemon = "daemon"
         public static let nothing = "nothing"
@@ -94,6 +102,9 @@ public struct DaemonReport: Codable, Equatable, Sendable {
         limitingIsSupported: Bool = true,
         preventIdleSleepWhileCharging: Bool = false,
         heldBy: String = DaemonReport.HeldBy.daemon,
+        nativeState: String? = nil,
+        nativeAgentLimit: Int? = nil,
+        nativeRegisteredLimit: Int? = nil,
         version: String = DranikVersion.current,
         decidedAt: Date
     ) {
@@ -109,6 +120,9 @@ public struct DaemonReport: Codable, Equatable, Sendable {
         self.limitingIsSupported = limitingIsSupported
         self.preventIdleSleepWhileCharging = preventIdleSleepWhileCharging
         self.heldBy = heldBy
+        self.nativeState = nativeState
+        self.nativeAgentLimit = nativeAgentLimit
+        self.nativeRegisteredLimit = nativeRegisteredLimit
         self.version = version
         self.decidedAt = decidedAt
     }
@@ -117,6 +131,7 @@ public struct DaemonReport: Codable, Equatable, Sendable {
         case upperLimit, lowerLimit, thermalCutoff, sleepPolicy, gate, reason
         case gateIsTrusted, chargerReason, reasonCode, limitingIsSupported
         case preventIdleSleepWhileCharging, heldBy, version, decidedAt
+        case nativeState, nativeAgentLimit, nativeRegisteredLimit
     }
 
     /// Decoded by hand so that fields added later arrive as their defaults rather
@@ -149,6 +164,9 @@ public struct DaemonReport: Codable, Equatable, Sendable {
         ) ?? false
         reasonCode = try container.decodeIfPresent(String.self, forKey: .reasonCode) ?? "unknown"
         version = try container.decodeIfPresent(String.self, forKey: .version) ?? "unknown"
+        nativeState = try container.decodeIfPresent(String.self, forKey: .nativeState)
+        nativeAgentLimit = try container.decodeIfPresent(Int.self, forKey: .nativeAgentLimit)
+        nativeRegisteredLimit = try container.decodeIfPresent(Int.self, forKey: .nativeRegisteredLimit)
 
         // A daemon that does not say is one from before the firmware corridor
         // existed, and every build before it held the limit in the process.

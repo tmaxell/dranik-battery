@@ -1,4 +1,5 @@
 import Foundation
+import IOKit
 
 /// A charge-control key together with the exact metadata it must report and the
 /// payloads that open and close the charge gate.
@@ -157,12 +158,41 @@ public struct Capabilities: Equatable, Sendable {
     /// Order matters: the newer single-key mechanism is checked first, because a
     /// machine carrying both should use the one its firmware actually drives.
     public static func detect(using connection: SMCConnection) throws -> Capabilities {
+        try detect(keyInfo: connection.keyInfo)
+    }
+
+    /// Injectable metadata reader for regression tests. Denied individual keys
+    /// are unavailable capabilities, not a failed SMC connection. Other errors
+    /// remain fatal unless the failed probe is optional to an already validated
+    /// control mechanism. Optional failures never establish writable metadata.
+    public static func detect(keyInfo: (SMCKey) throws -> SMCKeyInfo?) throws -> Capabilities {
+        func accessibleInfo(_ key: SMCKey) throws -> SMCKeyInfo? {
+            do {
+                return try keyInfo(key)
+            } catch SMCError.ioKit(let code) where code == kIOReturnNotPrivileged {
+                return nil
+            }
+        }
+        func optionalInfo(_ key: SMCKey, preservingControl: Bool) throws -> SMCKeyInfo? {
+            do {
+                return try accessibleInfo(key)
+            } catch {
+                // An unrelated probe must not discard a known legacy backend.
+                // Its actuator still validates every read and write separately.
+                guard preservingControl else { throw error }
+                return nil
+            }
+        }
+        func specMatches(_ spec: SMCKeySpec) throws -> Bool {
+            guard let info = try accessibleInfo(spec.key) else { return false }
+            return spec.matches(info)
+        }
         var chargeGate = ChargeGate.unsupported
 
-        if try specMatches(.chargeGateCHTE, on: connection) {
+        if try specMatches(.chargeGateCHTE) {
             chargeGate = .single(.chargeGateCHTE)
-        } else if try specMatches(.chargeGateCH0B, on: connection),
-                  try specMatches(.chargeGateCH0C, on: connection) {
+        } else if try specMatches(.chargeGateCH0B),
+                  try specMatches(.chargeGateCH0C) {
             chargeGate = .pair(.chargeGateCH0B, .chargeGateCH0C)
         }
 
@@ -180,7 +210,7 @@ public struct Capabilities: Equatable, Sendable {
             // A gated key throws rather than reporting absence — that is how
             // macOS 27 presents this family. Either way it is not usable, and
             // `detect` must not fail over hardware it merely cannot drive.
-            guard let info = (try? connection.keyInfo(key)) ?? nil, info == expected else {
+            guard let info = try optionalInfo(key, preservingControl: chargeGate.isSupported), info == expected else {
                 allPresent = false
                 break
             }
@@ -189,12 +219,13 @@ public struct Capabilities: Equatable, Sendable {
             firmwareLimit = .supported(candidate)
         }
 
-        let hasHardwareChargeLimit = try connection.keyInfo(SMCKey("CHWA")!) != nil
+        let hasValidatedControl = chargeGate.isSupported || firmwareLimit.isSupported
+        let hasHardwareChargeLimit = try optionalInfo(SMCKey("CHWA")!, preservingControl: hasValidatedControl) != nil
 
         var adapterKeys: [SMCKey] = []
         for name in ["CH0I", "CH0J", "CHIE"] {
             let key = SMCKey(name)!
-            if try connection.keyInfo(key) != nil {
+            if try optionalInfo(key, preservingControl: hasValidatedControl) != nil {
                 adapterKeys.append(key)
             }
         }
@@ -207,8 +238,4 @@ public struct Capabilities: Equatable, Sendable {
         )
     }
 
-    private static func specMatches(_ spec: SMCKeySpec, on connection: SMCConnection) throws -> Bool {
-        guard let info = try connection.keyInfo(spec.key) else { return false }
-        return spec.matches(info)
-    }
 }

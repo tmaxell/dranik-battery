@@ -1,5 +1,6 @@
 #!/bin/bash
-# Removes dranikd, and makes sure nothing is left limiting charging before it goes.
+# Removes dranikd after clearing its SMC limit and restoring any native policy
+# that was enabled before Dranik took control. The user's original limit may stay.
 #
 # The order matters more than anything else here, and there are two things that
 # outlive the process:
@@ -47,8 +48,13 @@ if [[ -x "$DRANIK" ]]; then
     echo "    gate is open (CHTE=${GATE:-unreadable})"
 fi
 
-# After the bootout, so the daemon cannot put the corridor straight back.
+# After bootout, so the daemon cannot put either target straight back.
 if [[ -x "$DRANIKD" ]]; then
+    echo "==> restoring the native policy that preceded Dranik"
+    if ! "$DRANIKD" --restore-native-limit; then
+        echo "Native restoration is not confirmed. Keeping binaries and backup; retry on AC power." >&2
+        exit 4
+    fi
     echo "==> clearing the firmware charge corridor"
     if ! "$DRANIKD" --clear-firmware-limit; then
         echo
@@ -72,7 +78,9 @@ if [[ -x "$DRANIK" ]]; then
 fi
 
 echo "==> removing files"
+[[ "${PLIST}" == "/Library/LaunchDaemons/com.dranik.battery.plist" ]] || exit 5
 rm -f "${PLIST}"
+rm -f /usr/local/libexec/dranik-native-helper
 rm -f /usr/local/libexec/dranikd
 rm -f /var/run/dranikd.pid
 rm -f "/Library/Application Support/dranik/state.json"

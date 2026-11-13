@@ -173,7 +173,7 @@ final class AppModel: ObservableObject {
           Headline    \(summary.headline)
           Detail      \(summary.detail ?? "-")
           Tone        \(summary.tone.rawValue)
-          Limit       \(summary.isLimiting ? "\(summary.lowerLimit)–\(summary.upperLimit) %" : "off")
+          Limit       \(summary.isLimiting ? (summary.limitHeldByNative ? "upper target \(summary.upperLimit) %" : "\(summary.lowerLimit)–\(summary.upperLimit) %") : "off")
           Controls    \(summary.controlsAreEnabled ? "enabled" : "disabled")
         """
     }
