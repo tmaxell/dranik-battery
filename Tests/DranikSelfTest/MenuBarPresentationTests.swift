@@ -38,6 +38,8 @@ func runMenuBarPresentationTests() {
     test("no daemon at all is said plainly, and the controls go dead") {
         let summary = MenuBarPresentation.summary(link: .notRunning, battery: facts())
         expectEqual(summary.headline, "Daemon not running")
+        expectEqual(summary.detail, "The current charging policy is unknown. "
+            + "macOS or the firmware may retain a previously requested limit.")
         expectEqual(summary.icon, .warning)
         expectFalse(summary.controlsAreEnabled, "a limit nobody will hear is not a control")
         expectFalse(summary.isLimiting)
@@ -48,7 +50,8 @@ func runMenuBarPresentationTests() {
             link: .unreachable("connection refused"), battery: facts()
         )
         expectEqual(summary.headline, "Daemon not responding")
-        expectEqual(summary.detail, "connection refused")
+        expectEqual(summary.detail, "connection refused The current charging policy is unknown. "
+            + "macOS or the firmware may retain a previously requested limit.")
         expectFalse(summary.controlsAreEnabled)
     }
 
@@ -276,6 +279,100 @@ func runMenuBarPresentationTests() {
         )
         expectTrue(summary.detail?.contains("does not recognise") == true,
                    "\(String(describing: summary.detail))")
+    }
+
+    // MARK: - Native macOS policy (no hardware required)
+
+    test("native pending and registration never imply a physically held limit") {
+        for code in ["nativePending", "nativeApplied"] {
+            let summary = MenuBarPresentation.summary(
+                link: .connected(daemonReport(
+                    gate: "closed", reasonCode: code, trusted: false,
+                    heldBy: DaemonReport.HeldBy.native
+                )), battery: facts()
+            )
+            expectTrue(summary.limitHeldByNative)
+            expectFalse(summary.needsRearming, "native policy has no gate to re-arm")
+            expectTrue(summary.controlsAreEnabled)
+            expectFalse(summary.icon == .holding)
+            expectTrue(summary.detail?.contains("confirmed") == true)
+            expectTrue(summary.headline.contains(code == "nativePending" ? "pending" : "registered"))
+        }
+    }
+
+    test("native errors retain controls and show the daemon explanation") {
+        let summary = MenuBarPresentation.summary(
+            link: .connected(daemonReport(
+                reasonCode: "nativeError", trusted: false, heldBy: DaemonReport.HeldBy.native
+            )), battery: nil
+        )
+        expectEqual(summary.tone, .alarm)
+        expectEqual(summary.detail, "because")
+        expectTrue(summary.controlsAreEnabled)
+        expectFalse(summary.needsRearming)
+    }
+
+    test("native discharge toward target warns about battery drain even without a reading") {
+        let summary = MenuBarPresentation.summary(
+            link: .connected(daemonReport(
+                reasonCode: "nativeComingDown", heldBy: DaemonReport.HeldBy.native
+            )), battery: nil
+        )
+        expectEqual(summary.headline, "Coming down to 80 %")
+        expectTrue(summary.detail?.contains("drain") == true)
+        expectEqual(summary.tone, .caution)
+    }
+
+    test("native calibration can override an upper target") {
+        let summary = MenuBarPresentation.summary(
+            link: .connected(daemonReport(
+                reasonCode: "nativeOverride", heldBy: DaemonReport.HeldBy.native
+            )), battery: facts(charging: true)
+        )
+        expectTrue(summary.headline.contains("calibration"))
+        expectTrue(summary.headline.contains("full"))
+        expectEqual(summary.icon, .chargingToLimit)
+    }
+
+    test("native confirmed release is off and can be enabled again") {
+        let summary = MenuBarPresentation.summary(
+            link: .connected(daemonReport(
+                upper: 100, reasonCode: "nativeDisabled", trusted: false,
+                heldBy: DaemonReport.HeldBy.native
+            )), battery: facts()
+        )
+        expectFalse(summary.isLimiting)
+        expectTrue(summary.controlsAreEnabled)
+        expectEqual(summary.icon, .unlimited)
+        expectTrue(summary.headline.contains("released"))
+    }
+
+    test("native observed charging holding and on-battery states are distinct") {
+        for (code, icon) in [
+            ("nativeHolding", MenuBarSummary.Icon.holding),
+            ("nativeCharging", .chargingToLimit),
+            ("nativeOnBattery", .onBattery),
+        ] {
+            let summary = MenuBarPresentation.summary(
+                link: .connected(daemonReport(
+                    reasonCode: code, heldBy: DaemonReport.HeldBy.native
+                )), battery: facts()
+            )
+            expectEqual(summary.icon, icon)
+            expectTrue(summary.limitHeldByNative)
+            expectFalse(summary.limitHeldByFirmware)
+        }
+    }
+
+    test("native controls follow support rather than obsolete gate trust") {
+        let summary = MenuBarPresentation.summary(
+            link: .connected(daemonReport(
+                reasonCode: "nativeError", trusted: false, supported: false,
+                heldBy: DaemonReport.HeldBy.native
+            )), battery: nil
+        )
+        expectFalse(summary.controlsAreEnabled)
+        expectFalse(summary.needsRearming)
     }
 
     // MARK: - Formatting

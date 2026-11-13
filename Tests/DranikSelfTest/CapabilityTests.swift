@@ -2,9 +2,125 @@ import DranikCore
 import DranikDaemon
 import DranikSMC
 import Foundation
+import IOKit
 
 /// Key-spec expectations that hold without touching hardware.
 func runKeySpecTests() {
+    test("macOS-denied keys do not abort discovery of remaining capabilities") {
+        var visited: [String] = []
+        let capabilities = try Capabilities.detect { key in
+            visited.append(key.description)
+            switch key.description {
+            case "bfF0", "bfD0", "bfE0", "CH0J":
+                throw SMCError.ioKit(kIOReturnNotPrivileged)
+            case "CHIE":
+                return SMCKeyInfo(size: 1, type: "hex_", attributes: 0xD4)
+            default:
+                return nil
+            }
+        }
+        expectFalse(capabilities.chargeGate.isSupported)
+        expectEqual(capabilities.firmwareLimit, .unsupported)
+        expectEqual(capabilities.adapterControlKeys.map(\.description), ["CHIE"])
+        expectTrue(visited.contains("CHIE"))
+    }
+
+    test("a denied primary gate does not hide a supported legacy gate") {
+        let capabilities = try Capabilities.detect { key in
+            switch key.description {
+            case "CHTE": throw SMCError.ioKit(kIOReturnNotPrivileged)
+            case "CH0B": return SMCKeySpec.chargeGateCH0B.expectedInfo
+            case "CH0C": return SMCKeySpec.chargeGateCH0C.expectedInfo
+            case "CHWA": throw SMCError.ioKit(kIOReturnNotPrivileged)
+            default: return nil
+            }
+        }
+        expectEqual(capabilities.chargeGate, .pair(.chargeGateCH0B, .chargeGateCH0C))
+        expectFalse(capabilities.hasHardwareChargeLimit)
+    }
+
+    test("a validated legacy gate survives optional corridor and telemetry probe errors") {
+        for failingKey in ["bfF0", "bfD0", "bfE0", "CHWA", "CH0I", "CH0J", "CHIE"] {
+            let candidate = FirmwareLimitSpec.bf0
+            let capabilities = try Capabilities.detect { key in
+                if key.description == failingKey { throw SMCError.notConnected }
+                switch key.description {
+                case "CHTE": return SMCKeySpec.chargeGateCHTE.expectedInfo
+                case "bfF0": return candidate.activationInfo
+                case "bfD0": return candidate.upperInfo
+                case "bfE0": return candidate.lowerInfo
+                default: return nil
+                }
+            }
+            expectEqual(capabilities.chargeGate, .single(.chargeGateCHTE), failingKey)
+            let corridorFailed = ["bfF0", "bfD0", "bfE0"].contains(failingKey)
+            expectEqual(capabilities.firmwareLimit.isSupported, !corridorFailed, failingKey)
+            expectFalse(capabilities.hasHardwareChargeLimit)
+            expectTrue(capabilities.adapterControlKeys.isEmpty)
+        }
+    }
+
+    test("a validated paired gate survives a firmware metadata error") {
+        let capabilities = try Capabilities.detect { key in
+            switch key.description {
+            case "CH0B": return SMCKeySpec.chargeGateCH0B.expectedInfo
+            case "CH0C": return SMCKeySpec.chargeGateCH0C.expectedInfo
+            case "bfF0": throw SMCError.smc(1)
+            default: return nil
+            }
+        }
+        expectEqual(capabilities.chargeGate, .pair(.chargeGateCH0B, .chargeGateCH0C))
+        expectEqual(capabilities.firmwareLimit, .unsupported)
+    }
+
+    test("a validated firmware corridor survives optional telemetry probe errors") {
+        for failingKey in ["CHWA", "CH0I", "CH0J", "CHIE"] {
+            let candidate = FirmwareLimitSpec.bf0
+            let capabilities = try Capabilities.detect { key in
+                if key.description == failingKey { throw SMCError.notConnected }
+                switch key.description {
+                case "bfF0": return candidate.activationInfo
+                case "bfD0": return candidate.upperInfo
+                case "bfE0": return candidate.lowerInfo
+                default: return nil
+                }
+            }
+            expectFalse(capabilities.chargeGate.isSupported)
+            expectEqual(capabilities.firmwareLimit, .supported(candidate), failingKey)
+            expectFalse(capabilities.hasHardwareChargeLimit)
+            expectTrue(capabilities.adapterControlKeys.isEmpty)
+        }
+    }
+
+    test("a partial legacy gate does not suppress optional probe errors") {
+        do {
+            _ = try Capabilities.detect { key in
+                switch key.description {
+                case "CH0B": return SMCKeySpec.chargeGateCH0B.expectedInfo
+                case "bfF0": throw SMCError.notConnected
+                default: return nil
+                }
+            }
+            expectTrue(false, "an incomplete gate was treated as validated control")
+        } catch SMCError.notConnected {
+            // A pair is usable only after both descriptors match.
+        }
+    }
+
+    test("capability probing without validated control still propagates transport errors") {
+        for failingKey in ["CHTE", "bfF0", "CHWA", "CH0I", "CH0J", "CHIE"] {
+            do {
+                _ = try Capabilities.detect { key in
+                    if key.description == failingKey { throw SMCError.notConnected }
+                    return nil
+                }
+                expectTrue(false, "transport error swallowed for \(failingKey)")
+            } catch SMCError.notConnected {
+                // No validated control exists to preserve; the error stays fatal.
+            }
+        }
+    }
+
     test("CHTE spec matches the metadata probed on the target machine") {
         // MacBookPro17,1 / mBoot-18000.120.36 reports 4 / ui32 / 0xd4.
         let observed = SMCKeyInfo(size: 4, type: "ui32", attributes: 0xD4)

@@ -14,6 +14,7 @@ let package = Package(
     products: [
         .executable(name: "dranik", targets: ["dranik"]),
         .executable(name: "dranikd", targets: ["dranikd"]),
+        .executable(name: "dranik-native-helper", targets: ["dranik-native-helper"]),
         .executable(name: "DranikApp", targets: ["DranikApp"]),
         .library(name: "DranikSMC", targets: ["DranikSMC"]),
         .library(name: "DranikPower", targets: ["DranikPower"]),
@@ -25,6 +26,9 @@ let package = Package(
         .target(name: "CDranikSMC"),
 
         .target(name: "DranikSMC", dependencies: ["CDranikSMC"]),
+        .target(name: "CDranikNative", linkerSettings: [.linkedFramework("Foundation")]),
+        .target(name: "DranikNative", dependencies: ["CDranikNative"]),
+        .executableTarget(name: "dranik-native-helper", dependencies: ["DranikNative"]),
         // Power-management message types, derived by the C preprocessor from
         // Apple's headers rather than hardcoded.
         .target(name: "CDranikPower"),
@@ -40,7 +44,7 @@ let package = Package(
         // be tested rather than only reasoned about.
         .target(
             name: "DranikDaemon",
-            dependencies: ["DranikSMC", "DranikPower", "DranikCore"]
+            dependencies: ["DranikSMC", "DranikPower", "DranikCore", "DranikNative"]
         ),
         .executableTarget(name: "dranikd", dependencies: ["DranikDaemon"]),
 
@@ -97,7 +101,7 @@ let package = Package(
         // ordinary executable instead. Run it with `make test`.
         .executableTarget(
             name: "dranik-selftest",
-            dependencies: ["DranikSMC", "DranikPower", "DranikCore", "DranikDaemon", "CDranikSMC"],
+            dependencies: ["DranikSMC", "DranikPower", "DranikCore", "DranikDaemon", "CDranikSMC", "DranikNative"],
             path: "Tests/DranikSelfTest"
         ),
     ]

@@ -65,8 +65,8 @@ public enum SMCError: Error, CustomStringConvertible {
 
     private static func format(_ code: kern_return_t) -> String {
         let hex = String(format: "0x%08x", UInt32(bitPattern: code))
-        // Writes require root; reads do not. Confirmed on the target machine by
-        // writing a key's own value back to it as an unprivileged user.
-        return code == kIOReturnNotPrivileged ? "\(hex) (not privileged — root required)" : hex
+        // Some macOS versions deny individual keys even to root. Do not
+        // promise that elevation will fix a firmware/OS access restriction.
+        return code == kIOReturnNotPrivileged ? "\(hex) (access denied — may require root or be restricted by macOS)" : hex
     }
 }

@@ -20,7 +20,12 @@ OPTIONS
   --state <path>    Where to record what it is doing (default: \(StateStore.defaultPath))
   --lock <path>     Single-instance lock (default: \(InstanceLock.defaultPath))
   --socket <path>   Control socket (default: \(ControlProtocol.defaultSocketPath))
-  --dry-run         Decide and log, but never write to the SMC. Needs no root.
+  --dry-run         Observe only: never write to the SMC or native preferences.
+  --restore-native-limit
+                    Restore the native policy captured before Dranik first changed
+                    it. Stop the daemon first. Used by uninstall; verifies release.
+  --native-original <path>
+                    Native policy backup (default: beside the configuration file).
   --clear-firmware-limit
                     Take the firmware charge corridor off the hardware and exit.
                     What `make uninstall` calls: the corridor is deliberately
@@ -74,6 +79,19 @@ let lockPath = option("--lock", default: InstanceLock.defaultPath)
 let socketPath = option("--socket", default: ControlProtocol.defaultSocketPath)
 
 let clearFirmwareLimit = arguments.contains("--clear-firmware-limit")
+let originalPath = option("--native-original", default:
+    URL(fileURLWithPath: configPath).deletingLastPathComponent().appendingPathComponent("native-original.json").path)
+let nativeController = NativeChargeController(baselinePath: originalPath)
+
+if arguments.contains("--restore-native-limit") {
+    guard !dryRun, geteuid() == 0 else { fail("native policy restoration requires root and cannot be combined with --dry-run") }
+    do {
+        let maintenanceLock = try InstanceLock(path: lockPath)
+        try withExtendedLifetime(maintenanceLock) { try nativeController.restoreOriginal() }
+        print("original native charge policy restored (or no native policy was changed)")
+        exit(0)
+    } catch { fail("cannot restore original native policy: \(error)", code: EX_UNAVAILABLE) }
+}
 
 if !dryRun && geteuid() != 0 {
     fail("writing the charge gate needs root. Use --dry-run to watch it decide instead.")
@@ -125,10 +143,24 @@ for problem in loaded.problems {
     if dryRun { print("config: \(problem)") }
 }
 
+func runNativeIfAvailable() {
+    do {
+        if try nativeController.probe() {
+            withExtendedLifetime(lock) {
+                NativeDaemon(config: loaded.config, controller: nativeController,
+                             dryRun: dryRun, configPath: configPath, socketPath: socketPath).run()
+            }
+        }
+    } catch {
+        FileHandle.standardError.write(Data("dranikd: native backend unavailable: \(error)\n".utf8))
+    }
+}
+
 let smc: SMCConnection
 do {
     smc = try SMCConnection()
 } catch {
+    runNativeIfAvailable()
     fail("cannot open AppleSMC: \(error)", code: EX_OSERR)
 }
 
@@ -136,7 +168,11 @@ let capabilities: Capabilities
 do {
     capabilities = try Capabilities.detect(using: smc)
 } catch {
+    runNativeIfAvailable()
     fail("cannot probe SMC capabilities: \(error)", code: EX_OSERR)
+}
+if !capabilities.firmwareLimit.isSupported && !capabilities.chargeGate.isSupported {
+    runNativeIfAvailable()
 }
 
 withExtendedLifetime(lock) {

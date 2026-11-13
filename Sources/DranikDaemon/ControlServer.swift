@@ -235,6 +235,16 @@ public final class ControlServer {
         // that the rest of the report predates the change.
         response.report?.upperLimit = config.upperLimit
         response.report?.lowerLimit = config.lowerLimit
+        if response.report?.heldBy == DaemonReport.HeldBy.native {
+            // A native request can take longer than this socket's settle wait.
+            // Never attach a new target to the old 'released'/'registered' claim.
+            response.report?.nativeState = "pending"
+            response.report?.nativeAgentLimit = nil
+            response.report?.nativeRegisteredLimit = nil
+            response.report?.reasonCode = "nativePending"
+            response.report?.reason = "requested \(config.upperLimit)%; the daemon has not yet confirmed the native change"
+            response.report?.gate = "unknown"
+        }
         return response
     }
 
@@ -253,8 +263,8 @@ public final class ControlServer {
         }
         return ControlResponse(
             ok: true, report: snapshot.get(),
-            notes: notes + ["applied, but the daemon has not re-decided yet — "
-                + "the gate and reason above predate the change"]
+            notes: notes + ["request queued; the daemon has not confirmed the change yet — "
+                + "read status again to verify the result"]
         )
     }
 
