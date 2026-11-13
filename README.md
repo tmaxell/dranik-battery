@@ -26,13 +26,14 @@ Working and in daily use. Charging stops, current falls to zero, and the hardwar
 confirms the inhibit with its own flag rather than the software taking its own
 word for it.
 
-There are two ways a Mac can hold the limit, and the daemon picks by probing
+There are three ways a Mac can hold the limit, and the daemon picks by probing
 rather than by model or OS version:
 
 | | Held by | Holds through sleep | Survives a reboot | Keys |
 |---|---|---|---|---|
 | **Firmware corridor** | the firmware | yes | no — the daemon writes it again at startup | `bfF0`, `bfD0`, `bfE0` |
 | **Software gate** | this daemon | no — hence most of the safety machinery | no | `CHTE`, or `CH0B`/`CH0C` |
+| **Native fallback** | macOS / PowerUIAgent | managed by macOS | persisted target; rechecked at startup | private PowerUI client, no direct SMC writes |
 
 Apple's firmware update shipped as `mBoot-20457` (in the macOS 14.8.9, 15.8 and
 26.7 security updates) removed the software gate and introduced the firmware
@@ -67,7 +68,8 @@ Not under `sudo` — the target elevates only the install script. It installs ev
 on a machine with neither mechanism, saying so loudly: the daemon then reports
 why nothing is being limited, which is the one answer worth having there.
 
-The default is a limit of 80 % resuming at 75 %.
+The default is a limit of 80 %. The SMC backends resume at 75 %; in native mode,
+macOS owns the resume behaviour.
 
 ```bash
 make uninstall
@@ -107,6 +109,43 @@ it, run `dranik reload`.
 The last three exist because the software gate stops being enforced the moment
 the daemon stops. On the firmware corridor they do nothing, and `dranik daemon`
 leaves them out rather than showing a setting with no effect.
+
+### Native charge limiting on macOS 27
+
+When no usable SMC charge gate or firmware corridor exists, Dranik probes
+`PowerUISmartChargeClient`. Apple gates the old SMC controls even for root on
+recent macOS 27 firmware; this fallback asks the privileged Apple agent instead.
+It uses a private interface and is not an Apple-supported public SDK contract.
+Advertised values use the native setter; other targets in 50–99 use the checked
+macOS 27 root preference schema and reload notification. Unknown future schemas
+are refused. 100 (`dranik off`) releases the manual limit.
+
+This is **one upper target**, not Dranik's own hysteresis band. `lowerLimit`,
+`sleepPolicy`, `thermalCutoff` and idle-sleep prevention do not apply. macOS owns
+charging timing, thermal protection and behaviour during sleep. It may discharge
+towards a lowered target while plugged in, or occasionally charge to full for
+battery-gauge calibration. Dranik neither cuts adapter power nor restarts powerd.
+
+`dranik daemon` distinguishes a requested target, the agent's loaded target,
+an active `pmset -g battlimit` registration, and observed charging state. A saved
+setting or registered policy is not itself proof that charging has stopped.
+Delayed registration is shown as pending, failed reads/writes as errors. Native
+calls run in a separate helper with a deadline; an indeterminate write is always
+re-read, never assumed to have rolled back.
+
+The original effective native policy is captured before the first change in
+`/Library/Application Support/dranik/native-original.json`. Restarts preserve
+both that backup and the active target. Uninstall stops the daemon and restores
+the original enabled/target policy, refusing removal if restoration is not
+confirmed. `dranik off` releases the target rather than uninstalling or restoring
+a previous limit. Do not run another charge controller concurrently.
+
+To update the daemon and an already installed menu-bar app together:
+
+```bash
+make app
+sudo ./scripts/install.sh --with-app
+```
 
 ### The menu bar app
 
@@ -265,7 +304,7 @@ written. A key that exists but no longer matches its expected size, type and
 attributes is treated as unknown rather than written to — firmware has
 repurposed keys before, and a blind write could actuate something else entirely.
 
-Two mechanisms, preferred in this order:
+Three mechanisms, preferred in this order:
 
 - **Firmware corridor** — `bfD0` and `bfE0` carry the bounds, `bfF0` switches it
   on, and the firmware holds the band by itself. The daemon sets it and then only
@@ -275,6 +314,9 @@ Two mechanisms, preferred in this order:
   daemon holds the band itself, closing and opening the gate as the charge
   crosses the edges. Everything in `Safety` below about watchdogs, verification
   and sleep policy exists because of this one.
+- **Native macOS target** — when neither SMC mechanism is usable, a disposable
+  helper asks PowerUIAgent to manage one upper target. Its report distinguishes
+  the agent's target, powerd registration and the observed charging state.
 
 Some firmware also exposes a fixed hardware limit key (`CHWA`); this project does
 not rely on it, because it is absent on plenty of machines. `dranik status`
@@ -284,6 +326,8 @@ reports which of the three yours has.
 Sources/
   CDranikSMC/       SMCParamStruct layout in C — the compiler guarantees it
   CDranikPower/     Power message constants, derived from Apple's headers by the preprocessor
+  CDranikNative/    Checked runtime bridge to PowerUI, isolated from daemon execution
+  DranikNative/     Typed native snapshot and request wrapper
   DranikSMC/        AppleSMC access: probing, reading, guarded writes
   DranikPower/      Public IOKit: battery snapshots, power events with no polling loop
   DranikCore/       Decisions. No IOKit, no clock, no filesystem — which is why it is testable whole
@@ -291,6 +335,7 @@ Sources/
   DranikApp/        The menu bar app. Decides nothing; displays only
   dranik/           CLI
   dranikd/          Daemon entry point
+  dranik-native-helper/  Short-lived native calls with a parent-enforced deadline
 tools/              The measurement tools the facts above came from
 assets/             Logo and app icon: one SVG each, and the .icns built from them
 ```
@@ -307,16 +352,30 @@ gate and went to 3.8 when the corridor arrived, because each decision read three
 more SMC keys; supplying the descriptors it already had, and reading the battery
 gauge only while charging, brought a decision from 1.77 ms back to 0.73. The backstop timers also carry leeway now, so the kernel can coalesce their wakeups instead of being held to a precise instant — on a laptop the wakeup costs more than the work.
 
+The native fallback has a different cost: it starts one helper and one `pmset`
+read per ordinary minute, plus verification on power events. On MacBookPro18,1 /
+macOS 27.2.1 the pair averaged about 14 ms of child CPU time; a separate 125-second
+idle sample found 0.02 seconds of daemon CPU and four child launches. The app's
+polling cadence is unchanged. This is a short measurement, not a day-long battery
+benchmark, and the earlier firmware figures above came from different hardware.
+
+Compatibility with earlier systems is retained through SMC probing, not by
+assuming the native private API exists there. Binary deployment remains macOS 14;
+non-slider native targets require the checked macOS 27 schema. This release was
+physically verified at 80 % on macOS 27.2.1, not on macOS 26. If SMC access is
+unavailable during uninstall, removal fails closed even after native restoration,
+keeping the files rather than claiming an unknown SMC state is safe.
+
 ## Development
 
 ```bash
 make build
-make test              # 296 tests, 926 assertions
+make test              # includes read-only hardware checks on this machine
 make ui-drill          # the app against a daemon that misbehaves on purpose
 make ui-snapshots      # render every popover state to PNG, light and dark
 make daemon-dry-run    # the whole decision cycle, writing nothing
 make icon              # re-render the .icns after editing the artwork
-make test-ci           # the suite minus the groups that need this machine
+make test-ci           # 313 hardware-independent tests, 1035 assertions
 ```
 
 Every push builds on GitHub Actions: compile, the suite, the UI drill, and the
