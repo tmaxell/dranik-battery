@@ -14,7 +14,7 @@ no further, which is the whole idea.
 ```
 $ dranik daemon
   Limit           75–80 %
-  Held by         the firmware — survives sleep, restarts and crashes
+  Held by         the firmware — holds through sleep and crashes; a reboot clears it
   Charging        held off
   Reason          charge 80% reached the 80% limit
   Charger says    inhibited
